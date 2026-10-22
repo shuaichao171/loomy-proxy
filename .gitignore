@@ -1,0 +1,16 @@
+# 运行期数据（账号 / 下游密钥 / 用量日志）绝不入库
+data/
+config/config.json
+*.log
+
+# 依赖与临时产物
+node_modules/
+.DS_Store
+*.tmp
+
+# 部署运行期（服务器侧生成的私密内容）
+deploy/.env
+deploy/secrets/
+deploy/app/
+deploy/config/
+docker-compose.override.yml

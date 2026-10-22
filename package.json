@@ -1,0 +1,31 @@
+{
+  "name": "loomy-proxy",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Loomy 反代网关：把 Loomy（讯飞 iModel）上游账号池，统一暴露为 OpenAI / Anthropic 兼容 API",
+  "type": "module",
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "main": "src/cli.js",
+  "bin": {
+    "loomy-proxy": "src/cli.js"
+  },
+  "scripts": {
+    "start": "node src/cli.js serve",
+    "dev": "node --watch src/cli.js serve",
+    "doctor": "node src/cli.js doctor",
+    "login": "node src/cli.js login",
+    "import-local": "node src/cli.js import-local",
+    "key:new": "node src/cli.js key create",
+    "test": "node --test"
+  },
+  "keywords": [
+    "loomy",
+    "openai-compatible",
+    "anthropic",
+    "reverse-proxy",
+    "gateway"
+  ],
+  "license": "MIT"
+}

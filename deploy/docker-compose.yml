@@ -1,0 +1,33 @@
+# LoomyProxy 部署（镜像模式）
+#
+# 适用：GitHub Actions 已把镜像推到 ghcr.io（私有包需先 docker login ghcr.io）。
+# 启动：  cd /www/wwwroot/docker/loomy-proxy-deploy && docker compose up -d
+# 更新：  docker compose pull && docker compose up -d
+# 注意：  端口只绑 127.0.0.1，对外由 Nginx 反代；config/ 与 data/ 持久化在宿主机。
+
+services:
+  loomy-proxy:
+    image: ghcr.io/shuaichao171/loomy-proxy:${LOOMY_PROXY_TAG:-latest}
+    container_name: loomy-proxy
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      LOOMY_PROXY_HOST: 0.0.0.0
+      LOOMY_PROXY_PORT: 8787
+    ports:
+      - "127.0.0.1:8787:8787"
+    volumes:
+      - ./config:/app/config
+      - ./data:/app/data
+      - ./secrets:/app/secrets:ro
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8787/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 3

@@ -1,0 +1,48 @@
+{
+  "server": {
+    "host": "127.0.0.1",
+    "port": 8787,
+    "adminPassword": "",
+    "cors": true,
+    "trustProxyHeaders": false
+  },
+  "upstream": {
+    "baseUrl": "https://loomyad.xunfei.cn/api/v1",
+    "clientVersion": "0.9.39",
+    "requestPurpose": "chat.message",
+    "timeoutMs": 600000,
+    "sendTraceparent": true,
+    "sendTrackingHeaders": true
+  },
+  "auth": {
+    "accountBaseUrl": "https://account.xfinfr.com",
+    "appId": "GM3LOOMY",
+    "loomyInstallDir": "E:/Loomy",
+    "envFile": ""
+  },
+  "pool": {
+    "strategy": "round-robin",
+    "maxRetries": 2,
+    "cooldownSeconds": 60,
+    "sessionAffinity": true,
+    "affinityTtlSeconds": 1800
+  },
+  "logging": {
+    "level": "info",
+    "requestLog": true,
+    "usageLog": true,
+    "maxLogEntries": 500
+  },
+  "limits": {
+    "requestsPerMinutePerKey": 0,
+    "maxBodyBytes": 33554432
+  },
+  "login": {
+    "codeTtlSeconds": 300,
+    "pendingTtlSeconds": 900,
+    "resendCooldownSeconds": 60,
+    "maxAttempts": 5,
+    "maxSendsPerHour": 5,
+    "maxPending": 200
+  }
+}

@@ -1,0 +1,723 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>LoomyProxy 管理台</title>
+<style>
+  :root {
+    --bg: #0b0f14;
+    --panel: #131a22;
+    --panel-2: #182230;
+    --line: #24313f;
+    --text: #e6edf3;
+    --muted: #8b9bb0;
+    --accent: #4da3ff;
+    --ok: #3fb950;
+    --warn: #d29922;
+    --err: #f85149;
+    --radius: 12px;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: radial-gradient(1200px 600px at 20% -10%, #16283d 0%, var(--bg) 55%);
+    color: var(--text); font: 14px/1.55 -apple-system, "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+    min-height: 100vh;
+  }
+  header {
+    display: flex; align-items: center; gap: 16px; padding: 18px 24px;
+    border-bottom: 1px solid var(--line); background: rgba(11,15,20,.7); backdrop-filter: blur(8px);
+    position: sticky; top: 0; z-index: 10;
+  }
+  header h1 { font-size: 16px; margin: 0; letter-spacing: .3px; }
+  header .brand { display: flex; align-items: center; gap: 10px; font-weight: 600; }
+  header .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--ok); box-shadow: 0 0 10px var(--ok); }
+  header .spacer { flex: 1; }
+  .badge { font-size: 12px; color: var(--muted); border: 1px solid var(--line); padding: 2px 10px; border-radius: 999px; }
+  main { padding: 20px 24px 64px; max-width: 1240px; margin: 0 auto; }
+  .grid { display: grid; gap: 14px; }
+  .grid.cards { grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); }
+  .card { background: linear-gradient(180deg, var(--panel) 0%, var(--panel-2) 100%); border: 1px solid var(--line); border-radius: var(--radius); padding: 16px; }
+  .card h3 { margin: 0 0 6px; font-size: 12px; color: var(--muted); font-weight: 500; letter-spacing: .4px; text-transform: uppercase; }
+  .card .value { font-size: 24px; font-weight: 650; font-variant-numeric: tabular-nums; }
+  .card .sub { color: var(--muted); font-size: 12px; margin-top: 4px; }
+  nav.tabs { display: flex; gap: 6px; margin: 22px 0 16px; flex-wrap: wrap; }
+  nav.tabs button {
+    background: transparent; border: 1px solid var(--line); color: var(--muted);
+    padding: 8px 14px; border-radius: 999px; cursor: pointer; font-size: 13px;
+  }
+  nav.tabs button.active { color: #08111c; background: var(--accent); border-color: var(--accent); font-weight: 600; }
+  section.panel { display: none; }
+  section.panel.active { display: block; }
+  .toolbar { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; align-items: center; }
+  button, .btn {
+    background: var(--panel-2); color: var(--text); border: 1px solid var(--line);
+    padding: 8px 13px; border-radius: 9px; cursor: pointer; font-size: 13px;
+  }
+  button:hover, .btn:hover { border-color: var(--accent); color: #cfe6ff; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #06101c; font-weight: 600; }
+  button.danger { border-color: #4d2226; color: #ffb4ae; }
+  button.ghost { background: transparent; }
+  button:disabled { opacity: .45; cursor: not-allowed; }
+  input, select, textarea {
+    background: #0d141b; border: 1px solid var(--line); color: var(--text);
+    padding: 8px 11px; border-radius: 9px; font-size: 13px; font-family: inherit;
+  }
+  input:focus, select:focus, textarea:focus { outline: none; border-color: var(--accent); }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { text-align: left; padding: 10px 10px; border-bottom: 1px solid var(--line); vertical-align: middle; }
+  th { color: var(--muted); font-weight: 500; font-size: 12px; text-transform: uppercase; letter-spacing: .3px; }
+  tbody tr:hover { background: rgba(77,163,255,.05); }
+  .tag { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 12px; border: 1px solid var(--line); }
+  .tag.ok { color: var(--ok); border-color: #1c3d26; background: rgba(63,185,80,.08); }
+  .tag.warn { color: var(--warn); border-color: #3d3320; background: rgba(210,153,34,.08); }
+  .tag.err { color: var(--err); border-color: #3d2024; background: rgba(248,81,73,.08); }
+  .tag.muted { color: var(--muted); }
+  .mono { font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; }
+  .muted { color: var(--muted); }
+  .row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+  .stack { display: grid; gap: 10px; }
+  .modal-backdrop {
+    position: fixed; inset: 0; background: rgba(2,6,11,.72); display: none;
+    align-items: center; justify-content: center; padding: 24px; z-index: 50;
+  }
+  .modal-backdrop.open { display: flex; }
+  .modal { background: var(--panel); border: 1px solid var(--line); border-radius: 16px; padding: 22px; width: 100%; max-width: 520px; }
+  .modal h2 { margin: 0 0 14px; font-size: 16px; }
+  .field { display: grid; gap: 5px; margin-bottom: 12px; }
+  .field label { font-size: 12px; color: var(--muted); }
+  .hint { font-size: 12px; color: var(--muted); }
+  .log { max-height: 380px; overflow: auto; font-size: 12px; }
+  .log .line { padding: 5px 8px; border-bottom: 1px dashed rgba(36,49,63,.8); }
+  .log .lvl { display: inline-block; width: 54px; font-weight: 600; }
+  .lvl.info { color: var(--accent); } .lvl.warn { color: var(--warn); } .lvl.error { color: var(--err); } .lvl.debug { color: var(--muted); }
+  .login-wrap { max-width: 380px; margin: 12vh auto; }
+  .toast {
+    position: fixed; right: 20px; bottom: 20px; display: grid; gap: 8px; z-index: 60;
+  }
+  .toast div { background: #17222f; border: 1px solid var(--line); border-left: 3px solid var(--accent); padding: 10px 14px; border-radius: 10px; font-size: 13px; max-width: 360px; }
+  .toast div.err { border-left-color: var(--err); }
+  code.inline { background: #0d141b; border: 1px solid var(--line); padding: 1px 6px; border-radius: 6px; font-size: 12px; }
+</style>
+</head>
+<body>
+<header>
+  <div class="brand"><span class="dot" id="healthDot"></span>LoomyProxy</div>
+  <span class="badge" id="versionBadge">v-</span>
+  <span class="badge" id="upstreamBadge">-</span>
+  <div class="spacer"></div>
+  <span class="badge" id="uptimeBadge">-</span>
+  <button class="ghost" id="btnLogout" hidden>退出</button>
+</header>
+
+<main>
+  <div id="loginView" class="login-wrap" hidden>
+    <div class="card stack">
+      <h3>管理台登录</h3>
+      <div class="field">
+        <label>管理密码（config.json → server.adminPassword）</label>
+        <input id="adminPassword" type="password" autocomplete="current-password" placeholder="留空表示本机免密" />
+      </div>
+      <button class="primary" id="btnLogin">进入</button>
+      <div class="hint" id="loginHint"></div>
+    </div>
+  </div>
+
+  <div id="appView" hidden>
+    <div class="grid cards" id="cards"></div>
+
+    <nav class="tabs">
+      <button data-tab="accounts" class="active">账号池</button>
+      <button data-tab="keys">下游密钥</button>
+      <button data-tab="models">模型目录</button>
+      <button data-tab="usage">用量</button>
+      <button data-tab="logs">请求日志</button>
+      <button data-tab="settings">设置</button>
+    </nav>
+
+    <section class="panel active" id="panel-accounts">
+      <div class="toolbar">
+        <button class="primary" id="btnImportLocal">导入本机 Loomy 登录态</button>
+        <button id="btnSmsLogin">短信登录</button>
+        <button id="btnAddSession">粘贴 session</button>
+        <button id="btnCheckAll">校验全部</button>
+        <button id="btnRefreshAccounts" class="ghost">刷新</button>
+      </div>
+      <div class="card">
+        <table>
+          <thead><tr>
+            <th>账号</th><th>状态</th><th>手机</th><th>权重</th><th>请求</th><th>积分</th><th>最近使用</th><th>操作</th>
+          </tr></thead>
+          <tbody id="accountsBody"></tbody>
+        </table>
+        <div class="hint" id="accountsHint" style="margin-top:10px"></div>
+      </div>
+    </section>
+
+    <section class="panel" id="panel-keys">
+      <div class="toolbar">
+        <button class="primary" id="btnCreateKey">创建密钥</button>
+        <button id="btnRefreshKeys" class="ghost">刷新</button>
+      </div>
+      <div class="card">
+        <table>
+          <thead><tr><th>名称</th><th>前缀</th><th>状态</th><th>限速</th><th>请求</th><th>积分</th><th>操作</th></tr></thead>
+          <tbody id="keysBody"></tbody>
+        </table>
+        <div class="hint" style="margin-top:10px">客户端把 <code class="inline">sk-loomy-…</code> 填到 <code class="inline">api_key</code>，base_url 填 <code class="inline" id="clientBase"></code>。</div>
+      </div>
+    </section>
+
+    <section class="panel" id="panel-models">
+      <div class="toolbar">
+        <button class="primary" id="btnRefreshModels">刷新模型</button>
+        <span class="hint" id="modelsHint"></span>
+      </div>
+      <div class="card">
+        <table>
+          <thead><tr><th>ID</th><th>名称</th><th>协议</th><th>上下文</th><th>输出</th><th>能力</th><th></th></tr></thead>
+          <tbody id="modelsBody"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="panel" id="panel-usage">
+      <div class="toolbar">
+        <select id="usageDays"><option value="1">最近 1 天</option><option value="7" selected>最近 7 天</option><option value="30">最近 30 天</option></select>
+        <button id="btnRefreshUsage" class="ghost">刷新</button>
+      </div>
+      <div class="grid" style="grid-template-columns: repeat(auto-fit, minmax(320px, 1fr))">
+        <div class="card"><h3>按模型</h3><table><thead><tr><th>模型</th><th>请求</th><th>积分</th><th>错误</th></tr></thead><tbody id="usageByModel"></tbody></table></div>
+        <div class="card"><h3>按账号</h3><table><thead><tr><th>账号</th><th>请求</th><th>积分</th><th>错误</th></tr></thead><tbody id="usageByAccount"></tbody></table></div>
+        <div class="card"><h3>按密钥</h3><table><thead><tr><th>密钥</th><th>请求</th><th>积分</th><th>错误</th></tr></thead><tbody id="usageByKey"></tbody></table></div>
+      </div>
+    </section>
+
+    <section class="panel" id="panel-logs">
+      <div class="toolbar">
+        <button id="btnRefreshLogs" class="ghost">刷新</button>
+        <span class="hint">服务端日志 + 最近请求（含上游返回的 points_consumed）</span>
+      </div>
+      <div class="card"><div class="log" id="logBody"></div></div>
+    </section>
+
+    <section class="panel" id="panel-settings">
+      <div class="toolbar"><button class="primary" id="btnSaveSettings">保存</button><span class="hint" id="settingsHint"></span></div>
+      <div class="card stack">
+        <div class="field"><label>上游 baseURL</label><input id="cfgUpstreamBase" /></div>
+        <div class="field"><label>客户端版本号（loomy-version 头）</label><input id="cfgClientVersion" /></div>
+        <div class="field"><label>默认请求用途（X-Loomy-Request-Purpose）</label><input id="cfgPurpose" /></div>
+        <div class="field"><label>调度策略</label>
+          <select id="cfgStrategy">
+            <option value="round-robin">round-robin 轮询</option>
+            <option value="weighted">weighted 加权随机</option>
+            <option value="fill-first">fill-first 优先填满</option>
+          </select>
+        </div>
+        <div class="field"><label>失败重试次数</label><input id="cfgRetries" type="number" min="0" max="5" /></div>
+        <div class="field"><label>冷却秒数</label><input id="cfgCooldown" type="number" min="1" /></div>
+        <div class="field"><label>单密钥每分钟请求上限（0 = 不限）</label><input id="cfgRpm" type="number" min="0" /></div>
+      </div>
+    </section>
+  </div>
+</main>
+
+<div class="modal-backdrop" id="modalBackdrop">
+  <div class="modal" id="modalBody"></div>
+</div>
+<div class="toast" id="toast"></div>
+
+<script>
+const state = { overview: null, accounts: [], keys: [], models: [], authorized: false };
+
+const $ = (id) => document.getElementById(id);
+const esc = (value) => String(value ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const fmtTime = (ts) => ts ? new Date(ts).toLocaleString('zh-CN', { hour12: false }) : '-';
+const fmtDuration = (seconds) => {
+  if (!seconds) return '-';
+  const h = Math.floor(seconds / 3600), m = Math.floor((seconds % 3600) / 60), s = seconds % 60;
+  return h ? `${h}h${m}m` : m ? `${m}m${s}s` : `${s}s`;
+};
+
+function toast (message, isError = false) {
+  const el = document.createElement('div');
+  el.className = isError ? 'err' : '';
+  el.textContent = message;
+  $('toast').appendChild(el);
+  setTimeout(() => el.remove(), 4200);
+}
+
+async function api (path, { method = 'GET', body } = {}) {
+  const response = await fetch(`/admin/api/${path}`, {
+    method,
+    headers: body ? { 'Content-Type': 'application/json' } : undefined,
+    body: body ? JSON.stringify(body) : undefined,
+    credentials: 'same-origin',
+  });
+  const text = await response.text();
+  let data = null;
+  try { data = text ? JSON.parse(text) : null; } catch { data = { raw: text }; }
+  if (!response.ok) {
+    const message = data?.error?.message || data?.error || `HTTP ${response.status}`;
+    throw Object.assign(new Error(message), { status: response.status, data });
+  }
+  return data;
+}
+
+async function boot () {
+  try {
+    const overview = await api('overview');
+    state.authorized = true;
+    showApp(overview);
+  } catch (error) {
+    if (error.status === 401) return showLogin();
+    toast(error.message, true);
+  }
+}
+
+function showLogin () {
+  state.authorized = false;
+  $('loginView').hidden = false;
+  $('appView').hidden = true;
+  $('btnLogout').hidden = true;
+  $('loginHint').textContent = '若 config.json 未设置 adminPassword，管理台默认仅允许本机访问。';
+}
+
+function showApp (overview) {
+  state.authorized = true;
+  $('loginView').hidden = true;
+  $('appView').hidden = false;
+  $('btnLogout').hidden = false;
+  renderOverview(overview);
+  loadAccounts();
+  loadKeys();
+  loadModels();
+  loadUsage();
+}
+
+function renderOverview (overview) {
+  state.overview = overview;
+  $('versionBadge').textContent = `v${overview.version}`;
+  $('upstreamBadge').textContent = overview.upstream.baseUrl;
+  $('uptimeBadge').textContent = `运行 ${fmtDuration(overview.uptimeSeconds)}`;
+  $('healthDot').style.background = overview.accounts.active > 0 ? 'var(--ok)' : 'var(--warn)';
+  $('healthDot').style.boxShadow = `0 0 10px ${overview.accounts.active > 0 ? 'var(--ok)' : 'var(--warn)'}`;
+  const cards = [
+    { title: '可用账号', value: `${overview.accounts.active}/${overview.accounts.total}`, sub: `冷却 ${overview.accounts.cooling} · 失效 ${overview.accounts.invalid} · 停用 ${overview.accounts.disabled}` },
+    { title: '模型', value: overview.models.count, sub: `默认 ${overview.models.defaultModel || '-'}` },
+    { title: '下游密钥', value: `${overview.keys.enabled}/${overview.keys.total}`, sub: '启用 / 总数' },
+    { title: '今日请求', value: overview.usage.window.requests, sub: `积分 ${overview.usage.window.points} · 错误 ${overview.usage.window.errors}` },
+    { title: '累计积分', value: overview.usage.totals.points, sub: `累计请求 ${overview.usage.totals.requests}` },
+    { title: '本机 Loomy', value: overview.localSession.found ? '已登录' : '未找到', sub: overview.localSession.found ? fmtTime(overview.localSession.updatedAt) : overview.localSession.file },
+  ];
+  $('cards').innerHTML = cards.map((card) => `
+    <div class="card">
+      <h3>${esc(card.title)}</h3>
+      <div class="value">${esc(card.value)}</div>
+      <div class="sub">${esc(card.sub)}</div>
+    </div>`).join('');
+  $('clientBase').textContent = `${location.origin}/v1`;
+}
+
+const ACCOUNT_STATUS_MAP = {
+  healthy: ['ok', '正常'], cooling: ['warn', '冷却'], invalid: ['err', '失效'], disabled: ['muted', '停用'],
+};
+
+async function loadAccounts () {
+  const data = await api('accounts');
+  state.accounts = data.accounts;
+  $('accountsBody').innerHTML = data.accounts.map((account) => {
+    const [cls, label] = ACCOUNT_STATUS_MAP[account.health] || ['muted', account.status];
+    return `<tr>
+      <td><div>${esc(account.name || account.nickname || account.id)}</div><div class="hint mono">${esc(account.sessionMasked)}</div></td>
+      <td><span class="tag ${cls}">${esc(label)}</span>${account.lastError ? `<div class="hint">${esc(account.lastError.slice(0, 60))}</div>` : ''}</td>
+      <td>${esc(account.phone || '-')}</td>
+      <td><input style="width:64px" type="number" min="1" value="${account.weight}" data-weight="${esc(account.id)}" /></td>
+      <td>${account.stats.requests}</td>
+      <td>${account.stats.points}</td>
+      <td class="hint">${esc(fmtTime(account.lastUsedAt))}</td>
+      <td><div class="row">
+        <button class="ghost" data-action="check" data-id="${esc(account.id)}">校验</button>
+        <button class="ghost" data-action="toggle" data-id="${esc(account.id)}">${account.enabled ? '停用' : '启用'}</button>
+        <button class="danger" data-action="delete" data-id="${esc(account.id)}">删除</button>
+      </div></td>
+    </tr>`;
+  }).join('') || '<tr><td colspan="8" class="hint">账号池为空：点「导入本机 Loomy 登录态」或「短信登录」</td></tr>';
+  $('accountsHint').textContent = `上游 ${data.upstreamBase} · 调度 ${state.overview?.scheduler?.strategy || ''} · 本机登录态 ${data.localSession.found ? '已找到' : '未找到'}（${data.localSession.file}）`;
+}
+
+async function loadKeys () {
+  const data = await api('keys');
+  state.keys = data.keys;
+  $('keysBody').innerHTML = data.keys.map((key) => `<tr>
+    <td>${esc(key.name)}</td>
+    <td class="mono">${esc(key.prefix)}…</td>
+    <td><span class="tag ${key.enabled ? 'ok' : 'muted'}">${key.enabled ? '启用' : '停用'}</span></td>
+    <td>${key.rpm || '不限'}</td>
+    <td>${key.stats.requests}</td>
+    <td>${key.stats.points}</td>
+    <td><div class="row">
+      <button class="ghost" data-key-toggle="${esc(key.id)}" data-enabled="${key.enabled ? '0' : '1'}">${key.enabled ? '停用' : '启用'}</button>
+      <button class="danger" data-key-delete="${esc(key.id)}">删除</button>
+    </div></td>
+  </tr>`).join('') || '<tr><td colspan="7" class="hint">还没有密钥</td></tr>';
+}
+
+async function loadModels () {
+  const data = await api('models');
+  state.models = data.models;
+  $('modelsHint').textContent = data.fetchedAt ? `更新于 ${fmtTime(data.fetchedAt)} · ${data.models.length} 个` : '尚未拉取';
+  $('modelsBody').innerHTML = data.models.map((model) => `<tr>
+    <td class="mono">${esc(model.id)}</td>
+    <td>${esc(model.name)}</td>
+    <td><span class="tag ${model.protocol === 'anthropic' ? 'warn' : 'ok'}">${esc(model.protocol)}</span></td>
+    <td>${model.contextLength || '-'}</td>
+    <td>${model.maxOutputTokens || '-'}</td>
+    <td class="hint">${[model.capabilities?.reasoning ? '推理' : '', model.capabilities?.vision ? '视觉' : '', model.capabilities?.functionCalling ? '工具' : ''].filter(Boolean).join(' · ') || '-'}</td>
+    <td class="hint">${model.isDefaultModel ? '默认主模型' : model.isDefaultSmallModel ? '默认小模型' : ''}</td>
+  </tr>`).join('') || '<tr><td colspan="7" class="hint">无模型</td></tr>';
+}
+
+async function loadUsage () {
+  const days = Number($('usageDays').value) || 7;
+  const data = await api(`usage?days=${days}`);
+  const fill = (id, rows) => {
+    $(id).innerHTML = rows.length === 0
+      ? '<tr><td colspan="4" class="hint">暂无数据</td></tr>'
+      : rows.map((row) => `<tr><td class="mono">${esc(row.id)}</td><td>${row.requests}</td><td>${row.points}</td><td>${row.errors}</td></tr>`).join('');
+  };
+  fill('usageByModel', data.byModel || []);
+  fill('usageByAccount', data.byAccount || []);
+  fill('usageByKey', data.byKey || []);
+}
+
+async function loadLogs () {
+  const data = await api('logs?limit=120');
+  const logs = (data.logs || []).slice().reverse().map((entry) => `
+    <div class="line"><span class="lvl ${esc(entry.level)}">${esc(entry.level)}</span>
+      <span class="hint">${esc(new Date(entry.ts).toLocaleTimeString('zh-CN', { hour12: false }))}</span>
+      ${esc(entry.message)}
+      ${entry.meta ? `<span class="hint mono"> ${esc(JSON.stringify(entry.meta).slice(0, 220))}</span>` : ''}
+    </div>`).join('');
+  const requests = (data.requests || []).map((item) => `
+    <div class="line"><span class="lvl ${item.status === 'ok' ? 'info' : 'error'}">${esc(item.status)}</span>
+      <span class="hint">${esc(new Date(item.ts).toLocaleTimeString('zh-CN', { hour12: false }))}</span>
+      <span class="mono">${esc(item.endpoint)}</span> ${esc(item.model)}
+      <span class="hint">${esc(item.latencyMs)}ms · ${item.promptTokens}/${item.completionTokens} tok · ${item.points} 积分${item.stream ? ' · stream' : ''}</span>
+    </div>`).join('');
+  $('logBody').innerHTML = `${requests}${logs}` || '<div class="hint">暂无日志</div>';
+}
+
+function openModal (html, onMount) {
+  $('modalBody').innerHTML = html;
+  $('modalBackdrop').classList.add('open');
+  onMount?.();
+}
+
+function closeModal () {
+  $('modalBackdrop').classList.remove('open');
+}
+
+// ---- 事件绑定 ----
+$('btnLogin').onclick = async () => {
+  try {
+    await api('session', { method: 'POST', body: { password: $('adminPassword').value } });
+    await boot();
+  } catch (error) { toast(error.message, true); }
+};
+$('adminPassword').addEventListener('keydown', (event) => { if (event.key === 'Enter') $('btnLogin').click(); });
+$('btnLogout').onclick = async () => { await api('logout', { method: 'POST' }).catch(() => {}); showLogin(); };
+
+document.querySelectorAll('nav.tabs button').forEach((button) => {
+  button.onclick = () => {
+    document.querySelectorAll('nav.tabs button').forEach((item) => item.classList.toggle('active', item === button));
+    document.querySelectorAll('section.panel').forEach((panel) => panel.classList.toggle('active', panel.id === `panel-${button.dataset.tab}`));
+    if (button.dataset.tab === 'logs') loadLogs();
+    if (button.dataset.tab === 'settings') loadSettings();
+  };
+});
+
+$('btnRefreshAccounts').onclick = loadAccounts;
+$('btnRefreshKeys').onclick = loadKeys;
+$('btnRefreshUsage').onclick = loadUsage;
+$('btnRefreshLogs').onclick = loadLogs;
+$('usageDays').onchange = loadUsage;
+
+$('btnImportLocal').onclick = async () => {
+  try {
+    const result = await api('accounts/import-local', { method: 'POST' });
+    toast(result.duplicate ? '本机登录态已在账号池中' : `导入成功: ${result.account.id}`);
+    await loadAccounts(); await loadModels();
+  } catch (error) { toast(error.message, true); }
+};
+
+$('btnAddSession').onclick = () => {
+  openModal(`
+    <h2>粘贴 Loomy session</h2>
+    <div class="field"><label>session（登录态，32 位左右)</label><input id="mSession" placeholder="从 Loomy 客户端或抓包获取" /></div>
+    <div class="field"><label>备注名称（可选）</label><input id="mName" /></div>
+    <div class="field"><label>权重</label><input id="mWeight" type="number" min="1" value="1" /></div>
+    <div class="row"><button class="primary" id="mSubmit">保存</button><button class="ghost" onclick="closeModal()">取消</button></div>
+  `, () => {
+    $('mSubmit').onclick = async () => {
+      try {
+        await api('accounts', { method: 'POST', body: { session: $('mSession').value.trim(), name: $('mName').value.trim(), weight: Number($('mWeight').value) || 1 } });
+        closeModal(); toast('已添加'); await loadAccounts(); await loadModels();
+      } catch (error) { toast(error.message, true); }
+    };
+  });
+};
+
+$('btnSmsLogin').onclick = () => {
+  openModal(`
+    <h2>手机号 + 验证码登录</h2>
+    <div class="field"><label>手机号</label><input id="mPhone" placeholder="13800000000" inputmode="numeric" maxlength="11" /></div>
+    <div class="row"><button class="primary" id="mSend">发送验证码</button><span class="hint" id="mSendHint">未发送</span></div>
+    <div class="field" style="margin-top:12px"><label>验证码</label><input id="mCode" placeholder="4-8 位数字" inputmode="numeric" maxlength="8" disabled /></div>
+    <div class="row">
+      <button class="primary" id="mVerify" disabled>登录</button>
+      <button class="ghost" id="mResend" disabled>重新发送</button>
+      <button class="ghost" onclick="closeModal()">取消</button>
+    </div>
+    <div class="hint" id="mResult" style="margin-top:12px"></div>
+    <div class="hint" style="margin-top:6px">验证码由讯飞账号服务下发，服务端保管 loginId；发码有冷却与每小时配额，避免误触把账号服务当短信炮台。</div>
+  `, () => {
+    let loginId = '';
+    let resendLeft = 0;
+    let expiresLeft = 0;
+    let timer = null;
+
+    const render = () => {
+      const sendHint = $('mSendHint');
+      if (!sendHint) { if (timer) clearInterval(timer); return; }
+      if (loginId) {
+        const parts = [`已发送至 ${state._loginPhone || ''}`];
+        if (expiresLeft > 0) parts.push(`${expiresLeft}s 后过期`);
+        else parts.push('已过期，请重新发送');
+        sendHint.textContent = parts.filter(Boolean).join(' · ');
+      }
+      const resend = $('mResend');
+      if (resend) {
+        resend.disabled = !loginId || resendLeft > 0;
+        resend.textContent = resendLeft > 0 ? `重新发送(${resendLeft}s)` : '重新发送';
+      }
+    };
+
+    timer = setInterval(() => {
+      if (!document.getElementById('mSend')) { clearInterval(timer); return; }
+      if (resendLeft > 0) resendLeft -= 1;
+      if (expiresLeft > 0) expiresLeft -= 1;
+      render();
+    }, 1000);
+
+    const applyView = (view) => {
+      loginId = view.loginId || loginId;
+      resendLeft = Number(view.resendAfterSeconds) || 0;
+      expiresLeft = Number(view.expiresInSeconds) || 0;
+      state._loginPhone = view.phoneMasked || state._loginPhone || '';
+      $('mPhone').value = $('mPhone').value || '';
+      $('mPhone').readOnly = true;
+      $('mCode').disabled = false;
+      $('mCode').focus();
+      $('mVerify').disabled = false;
+      render();
+    };
+
+    $('mSend').onclick = async () => {
+      const phone = $('mPhone').value.trim();
+      if (!/^1[3-9]\d{9}$/.test(phone)) return toast('手机号格式不正确', true);
+      $('mSend').disabled = true;
+      try {
+        applyView(await api('login/send-code', { method: 'POST', body: { phone } }));
+        toast('验证码已发送');
+      } catch (error) {
+        toast(error.message, true);
+      } finally {
+        $('mSend').disabled = Boolean(loginId);
+      }
+    };
+
+    $('mResend').onclick = async () => {
+      if (!loginId) return;
+      try {
+        applyView(await api('login/resend', { method: 'POST', body: { loginId } }));
+        $('mCode').value = '';
+        toast('验证码已重新发送');
+      } catch (error) {
+        if (error.retryAfterSeconds) resendLeft = Number(error.retryAfterSeconds) || resendLeft;
+        render();
+        toast(error.message, true);
+      }
+    };
+
+    $('mVerify').onclick = async () => {
+      const code = $('mCode').value.trim();
+      if (!loginId) return toast('请先获取验证码', true);
+      if (!/^\d{4,8}$/.test(code)) return toast('验证码格式不正确', true);
+      $('mVerify').disabled = true;
+      try {
+        const result = await api('login/verify', { method: 'POST', body: { loginId, code } });
+        const account = result.account || {};
+        const models = result.after?.models;
+        $('mResult').innerHTML = [
+          `<div class="tag ok">${result.created ? '登录成功，账号已入库' : '登录成功，已刷新该账号 auth'}</div>`,
+          `<div style="margin-top:8px">${account.nickname || '(无昵称)'} · ${account.phone || ''} · 状态 ${account.status || ''}</div>`,
+          `<div class="hint" style="margin-top:4px">账号 ${account.id || ''}${models?.ok ? ` · 模型 ${models.count} 个` : ''}</div>`,
+        ].join('');
+        $('mVerify').disabled = true;
+        $('mCode').disabled = true;
+        $('mResend').disabled = true;
+        loginId = '';
+        if (timer) clearInterval(timer);
+        toast(result.created ? '登录成功' : '已刷新 auth');
+        await loadAccounts();
+        await loadModels();
+      } catch (error) {
+        $('mVerify').disabled = false;
+        toast(error.message + (error.attemptsLeft !== undefined ? `（剩余 ${error.attemptsLeft} 次）` : ''), true);
+        if (error.attemptsLeft === 0) {
+          $('mCode').disabled = true;
+          $('mVerify').disabled = true;
+        }
+      }
+    };
+
+    $('mCode').addEventListener('keydown', (event) => {
+      if (event.key === 'Enter') $('mVerify').click();
+    });
+    $('mPhone').addEventListener('keydown', (event) => {
+      if (event.key === 'Enter') $('mSend').click();
+    });
+  });
+};
+
+$('btnCheckAll').onclick = async () => {
+  for (const account of state.accounts) {
+    try { await api(`accounts/${encodeURIComponent(account.id)}/check`, { method: 'POST' }); } catch { /* 单个失败不阻塞 */ }
+  }
+  toast('校验完成');
+  await loadAccounts();
+};
+
+$('accountsBody').addEventListener('click', async (event) => {
+  const button = event.target.closest('button');
+  if (!button) return;
+  const id = button.dataset.id;
+  if (button.dataset.action === 'check') {
+    try { const result = await api(`accounts/${encodeURIComponent(id)}/check`, { method: 'POST' }); toast(`校验通过: ${result.profile?.nickname || id}`); }
+    catch (error) { toast(error.message, true); }
+    await loadAccounts();
+  } else if (button.dataset.action === 'toggle') {
+    const account = state.accounts.find((item) => item.id === id);
+    await api(`accounts/${encodeURIComponent(id)}`, { method: 'PATCH', body: { enabled: account.health === 'disabled' } });
+    await loadAccounts();
+  } else if (button.dataset.action === 'delete') {
+    if (!confirm(`确认删除账号 ${id}？`)) return;
+    await api(`accounts/${encodeURIComponent(id)}`, { method: 'DELETE' });
+    await loadAccounts();
+  }
+});
+
+$('accountsBody').addEventListener('change', async (event) => {
+  const input = event.target.closest('input[data-weight]');
+  if (!input) return;
+  await api(`accounts/${encodeURIComponent(input.dataset.weight)}`, { method: 'PATCH', body: { weight: Number(input.value) || 1 } });
+  toast('权重已更新');
+});
+
+$('btnCreateKey').onclick = () => {
+  openModal(`
+    <h2>创建下游密钥</h2>
+    <div class="field"><label>名称</label><input id="kName" placeholder="cherry-studio" /></div>
+    <div class="field"><label>允许的模型（逗号分隔，留空 = 不限）</label><input id="kModels" /></div>
+    <div class="field"><label>每分钟请求上限（0 = 不限）</label><input id="kRpm" type="number" min="0" value="0" /></div>
+    <div class="row"><button class="primary" id="kSubmit">创建</button><button class="ghost" onclick="closeModal()">取消</button></div>
+  `, () => {
+    $('kSubmit').onclick = async () => {
+      try {
+        const result = await api('keys', {
+          method: 'POST',
+          body: {
+            name: $('kName').value.trim(),
+            allowedModels: $('kModels').value.split(',').map((item) => item.trim()).filter(Boolean),
+            rpm: Number($('kRpm').value) || 0,
+          },
+        });
+        closeModal();
+        openModal(`
+          <h2>密钥已创建</h2>
+          <div class="hint">明文只显示这一次，请立刻复制：</div>
+          <div class="field" style="margin-top:10px"><input id="plainKey" class="mono" readonly value="${esc(result.plaintext)}" /></div>
+          <div class="row"><button class="primary" onclick="navigator.clipboard.writeText(document.getElementById('plainKey').value);toast('已复制')">复制</button><button class="ghost" onclick="closeModal()">关闭</button></div>
+        `);
+        $('plainKey').select();
+        await loadKeys();
+      } catch (error) { toast(error.message, true); }
+    };
+  });
+};
+
+$('keysBody').addEventListener('click', async (event) => {
+  const button = event.target.closest('button');
+  if (!button) return;
+  if (button.dataset.keyToggle) {
+    await api(`keys/${encodeURIComponent(button.dataset.keyToggle)}`, { method: 'PATCH', body: { enabled: button.dataset.enabled === '1' } });
+    await loadKeys();
+  }
+  if (button.dataset.keyDelete) {
+    if (!confirm('确认删除该密钥？')) return;
+    await api(`keys/${encodeURIComponent(button.dataset.keyDelete)}`, { method: 'DELETE' });
+    await loadKeys();
+  }
+});
+
+$('btnRefreshModels').onclick = async () => {
+  try {
+    const result = await api('models/refresh', { method: 'POST' });
+    toast(result.ok ? `已刷新 ${result.count} 个模型` : `刷新失败: ${result.error}`, !result.ok);
+    await loadModels();
+  } catch (error) { toast(error.message, true); }
+};
+
+async function loadSettings () {
+  const config = await api('config');
+  $('cfgUpstreamBase').value = config.upstream.baseUrl;
+  $('cfgClientVersion').value = config.upstream.clientVersion;
+  $('cfgPurpose').value = config.upstream.requestPurpose;
+  $('cfgStrategy').value = config.pool.strategy;
+  $('cfgRetries').value = config.pool.maxRetries;
+  $('cfgCooldown').value = config.pool.cooldownSeconds;
+  $('cfgRpm').value = config.limits.requestsPerMinutePerKey;
+  $('settingsHint').textContent = '保存后立即生效（写入 config/config.json）';
+}
+
+$('btnSaveSettings').onclick = async () => {
+  try {
+    await api('config', {
+      method: 'PUT',
+      body: {
+        upstream: {
+          baseUrl: $('cfgUpstreamBase').value.trim(),
+          clientVersion: $('cfgClientVersion').value.trim(),
+          requestPurpose: $('cfgPurpose').value.trim(),
+        },
+        pool: {
+          strategy: $('cfgStrategy').value,
+          maxRetries: Number($('cfgRetries').value),
+          cooldownSeconds: Number($('cfgCooldown').value),
+        },
+        limits: { requestsPerMinutePerKey: Number($('cfgRpm').value) },
+      },
+    });
+    toast('配置已保存');
+    await boot();
+  } catch (error) { toast(error.message, true); }
+};
+
+$('modalBackdrop').addEventListener('click', (event) => { if (event.target === $('modalBackdrop')) closeModal(); });
+
+boot();
+setInterval(() => { if (state.authorized) api('overview').then(renderOverview).catch(() => {}); }, 15000);
+</script>
+</body>
+</html>

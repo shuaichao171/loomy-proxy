@@ -1,0 +1,38 @@
+# LoomyProxy 部署（源码挂载模式，无需构建、无需镜像仓库登录）
+#
+# 适用：服务器禁止 docker build（3.9G 内存无 swap），也不想给服务器配 GHCR 凭据。
+# 原理：直接拉官方 node:22-alpine，把仓库源码只读挂进 /app 运行；项目零依赖，无需 npm install。
+#
+# 首次：  rsync/scp 源码到 ./app，然后 docker compose -f docker-compose.source.yml up -d
+# 更新：  覆盖 ./app 后 docker compose -f docker-compose.source.yml restart
+# 注意：  ./app 只读挂载；可写内容全部在 ./config、./data、./secrets。
+
+services:
+  loomy-proxy:
+    image: node:22-alpine
+    container_name: loomy-proxy
+    restart: unless-stopped
+    working_dir: /app
+    command: ["node", "src/cli.js", "serve"]
+    env_file: .env
+    environment:
+      LOOMY_PROXY_HOST: 0.0.0.0
+      LOOMY_PROXY_PORT: 8787
+    ports:
+      - "127.0.0.1:8787:8787"
+    volumes:
+      - ./app:/app:ro
+      - ./config:/app/config
+      - ./data:/app/data
+      - ./secrets:/app/secrets:ro
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8787/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
