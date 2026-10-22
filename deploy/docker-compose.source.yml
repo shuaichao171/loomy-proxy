@@ -5,7 +5,7 @@
 #
 # 首次：  rsync/scp 源码到 ./app，然后 docker compose -f docker-compose.source.yml up -d
 # 更新：  覆盖 ./app 后 docker compose -f docker-compose.source.yml restart
-# 注意：  ./app 只读挂载；可写内容全部在 ./config、./data、./secrets。
+# 注意：  ./app 可写挂载（Docker 需要在其下创建嵌套挂载点）；业务数据全在 ./config、./data、./secrets。
 
 services:
   loomy-proxy:
@@ -22,7 +22,9 @@ services:
     ports:
       - "127.0.0.1:8787:8787"
     volumes:
-      - ./app:/app:ro
+      # 注意：宿主机源码目录挂到 /app 不能只读 —— Docker 需要在 /app 下创建
+      # config/ data/ secrets/ 这三个嵌套挂载点，只读父目录会导致容器启动失败。
+      - ./app:/app
       - ./config:/app/config
       - ./data:/app/data
       - ./secrets:/app/secrets:ro
