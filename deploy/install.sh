@@ -12,6 +12,7 @@ DIR="/www/wwwroot/docker/loomy-proxy-deploy"
 PORT="8787"
 NETWORK=""
 SOURCE="$(cd "$(dirname "$0")" && pwd)"
+NODE_IMAGE=""
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -19,6 +20,7 @@ while [ $# -gt 0 ]; do
     --port) PORT="$2"; shift 2 ;;
     --network) NETWORK="$2"; shift 2 ;;
     --source) SOURCE="$2"; shift 2 ;;
+    --node-image) NODE_IMAGE="$2"; shift 2 ;;
     *) echo "未知参数: $1"; exit 1 ;;
   esac
 done
@@ -27,7 +29,14 @@ say() { printf '\033[36m[install]\033[0m %s\n' "$*"; }
 warn() { printf '\033[33m[warn]\033[0m %s\n' "$*"; }
 
 command -v docker >/dev/null || { echo "服务器没有 docker"; exit 1; }
-docker compose version >/dev/null 2>&1 || { echo "缺少 docker compose 插件"; exit 1; }
+if docker compose version >/dev/null 2>&1; then
+  DC="docker compose"
+elif command -v docker-compose >/dev/null 2>&1; then
+  DC="docker-compose"          # 老服务器只有独立二进制（如 /usr/bin/docker-compose v2.x）
+else
+  echo "缺少 docker compose（插件或独立二进制都没有）"; exit 1
+fi
+say_runtime() { :; }
 
 say "目标目录 $DIR"
 mkdir -p "$DIR"/{app,config,data,secrets}
@@ -84,7 +93,7 @@ fi
 
 # 5) 接入 sub2api 网络（可选，便于 sub2api 用 http://loomy-proxy:8787/v1）
 if [ "$NETWORK" = "auto" ]; then
-  NETWORK="$(docker network ls --format '{{.Name}}' | grep -E '^sub2api.*_default$' | head -1 || true)"
+  NETWORK="$(docker network ls --format '{{.Name}}' | grep -E '^sub2api' | head -1 || true)"
 fi
 if [ -n "$NETWORK" ] && docker network inspect "$NETWORK" >/dev/null 2>&1; then
   cat > "$DIR/docker-compose.override.yml" <<EOF
@@ -98,7 +107,7 @@ networks:
     external: true
     name: ${NETWORK}
 EOF
-  say "已接入 Docker 网络 ${NETWORK}（容器名 loomy-proxy）"
+  say "已接入 Docker 网络 ${NETWORK}（sub2api 里可用 http://loomy-proxy:8787/v1）"
 else
   rm -f "$DIR/docker-compose.override.yml"
   [ -n "$NETWORK" ] && warn "网络 $NETWORK 不存在，跳过接入"
@@ -112,8 +121,19 @@ chmod 600 "$DIR"/secrets/* 2>/dev/null || true
 
 # 7) 启动
 cd "$DIR"
-docker compose pull node:22-alpine >/dev/null 2>&1 || true
-docker compose up -d
+if [ -n "$NODE_IMAGE" ]; then
+  if grep -q '^LOOMY_PROXY_NODE_IMAGE=' "$DIR/.env"; then
+    sed -i "s|^LOOMY_PROXY_NODE_IMAGE=.*|LOOMY_PROXY_NODE_IMAGE=${NODE_IMAGE}|" "$DIR/.env"
+  else
+    printf 'LOOMY_PROXY_NODE_IMAGE=%s
+' "$NODE_IMAGE" >> "$DIR/.env"
+  fi
+  say "使用 node 镜像 $NODE_IMAGE"
+fi
+IMG="$(grep -E '^LOOMY_PROXY_NODE_IMAGE=' "$DIR/.env" 2>/dev/null | cut -d= -f2 || true)"
+[ -n "$IMG" ] || IMG="node:22-alpine"
+docker image inspect "$IMG" >/dev/null 2>&1 || { say "拉取 $IMG …"; docker pull "$IMG"; }
+$DC up -d
 say "等待健康检查…"
 for i in $(seq 1 30); do
   STATUS="$(docker inspect -f '{{.State.Health.Status}}' loomy-proxy 2>/dev/null || echo starting)"
@@ -122,7 +142,7 @@ for i in $(seq 1 30); do
 done
 
 echo
-docker compose ps
+$DC ps
 echo
 say "健康检查: $(curl -s -m 5 "http://127.0.0.1:${PORT}/health" || echo '失败')"
 cat <<EOF

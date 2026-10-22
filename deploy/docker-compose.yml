@@ -7,7 +7,7 @@
 
 services:
   loomy-proxy:
-    image: ghcr.io/shuaichao171/loomy-proxy:${LOOMY_PROXY_TAG:-latest}
+    image: ${LOOMY_PROXY_IMAGE:-ghcr.io/shuaichao171/loomy-proxy:latest}
     container_name: loomy-proxy
     restart: unless-stopped
     env_file: .env

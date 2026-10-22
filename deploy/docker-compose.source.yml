@@ -9,7 +9,8 @@
 
 services:
   loomy-proxy:
-    image: node:22-alpine
+    # 服务器上已有哪个 node 镜像就用哪个，避免多拉一份（.env 里可覆盖）
+    image: ${LOOMY_PROXY_NODE_IMAGE:-node:22-alpine}
     container_name: loomy-proxy
     restart: unless-stopped
     working_dir: /app
