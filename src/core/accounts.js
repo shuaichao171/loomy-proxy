@@ -117,6 +117,16 @@ export class AccountStore {
     return this.accounts.find((account) => account.id === id || account.userid === id || account.name === id) || null
   }
 
+
+  /** 从磁盘重读（CLI 在另一个进程里增删账号后，服务无需重启即可生效）。 */
+  reload () {
+    const before = this.accounts.length
+    const beforeIds = this.accounts.map((account) => account.id).join(',')
+    this.load()
+    const afterIds = this.accounts.map((account) => account.id).join(',')
+    return this.accounts.length !== before || afterIds !== beforeIds
+  }
+
   add (input = {}) {
     const session = String(input.session || '').trim()
     if (!session) throw new Error('session 不能为空')

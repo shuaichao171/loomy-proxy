@@ -19,10 +19,12 @@ export class ApiKeyStore {
     this.filePath = filePath
     this.logger = logger
     this.keys = []
+    this.loadedAt = 0
     this.load()
   }
 
   load () {
+    this.loadedAt = Date.now()
     const parsed = readJsonFile(this.filePath, { keys: [] })
     this.keys = Array.isArray(parsed?.keys) ? parsed.keys.map((key) => this.normalize(key)) : []
   }
@@ -85,9 +87,32 @@ export class ApiKeyStore {
     const token = String(plaintext || '').trim()
     if (!token) return null
     const digest = hashKey(token)
+    const found = this.findByDigest(digest)
+    if (found) return found
+    // 未命中时再重读一次文件：CLI / 另一个进程（docker exec）刚创建的密钥
+    // 不该要求先重启服务才生效；命中路径零额外 I/O。
+    if (this.reloadFromDisk()) {
+      return this.findByDigest(digest)
+    }
+    return null
+  }
+
+  findByDigest (digest) {
     const key = this.keys.find((item) => item.keyHash === digest)
     if (!key || !key.enabled) return null
     return key
+  }
+
+  /** 从磁盘重读；有变化返回 true（只在 verify 未命中时调用）。 */
+  reloadFromDisk () {
+    const before = this.keys.length
+    const beforeFirst = this.keys[0]?.id || ''
+    try {
+      this.load()
+    } catch {
+      return false
+    }
+    return this.keys.length !== before || (this.keys[0]?.id || '') !== beforeFirst
   }
 
   get (id) {

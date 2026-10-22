@@ -140,3 +140,17 @@ test('模型目录：归一化与 OpenAI 投影', () => {
   const reloaded = new ModelCatalog({ cacheFile: path.join(dir, 'models.json') })
   assert.equal(reloaded.models.length, 2)
 })
+
+test('ApiKeyStore：别的进程新建的密钥无需重启即可校验（reload-on-miss）', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'loomy-keys-'))
+  const file = path.join(dir, 'keys.json')
+  const live = new ApiKeyStore({ filePath: file })          // 模拟常驻服务
+  const cli = new ApiKeyStore({ filePath: file })           // 模拟 docker exec 里的 CLI
+  const created = cli.create({ name: 'from-cli' })
+
+  // 常驻服务启动后没有重读过文件，但外部进程新建的密钥应当立刻可用
+  assert.equal(live.verify(created.plaintext)?.id, created.key.id)
+
+  // 命中路径走内存，不再重复读盘
+  assert.equal(live.verify(created.plaintext)?.id, created.key.id)
+})

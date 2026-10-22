@@ -40,6 +40,15 @@ export class Scheduler {
   }
 
   available () {
+    let pool = this.filter()
+    if (pool.length === 0 && typeof this.accountStore.reload === 'function') {
+      // 池子空了再从磁盘读一次：CLI 在另一进程里导入/登录的账号无需重启即可用
+      if (this.accountStore.reload()) pool = this.filter()
+    }
+    return pool
+  }
+
+  filter () {
     const now = Date.now()
     return this.accountStore.list().filter((account) => {
       if (!account.enabled) return false
