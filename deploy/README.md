@@ -109,6 +109,34 @@ curl -s "$OPENAI_BASE_URL/models" -H "Authorization: Bearer $OPENAI_API_KEY" | h
 
 注意：Loomy 上游按 `points_consumed` 真实扣积分，多人共用同一账号池时额度是共享的。
 
+## HTTPS 证书（acme.sh / Let's Encrypt）
+
+已上线的做法（HTTP-01 验证，webroot 走 `/.well-known/acme-challenge/`）：
+
+```bash
+# 1) 80 端口要能提供 ACME 验证文件（ssl 模板里已内置该 location）
+mkdir -p /www/wwwroot/loomy.shuaichao.xyz/.well-known/acme-challenge
+
+# 2) 装 acme.sh 并签发（ECC 证书，自动挂续期 cron）
+curl -s https://get.acme.sh | sh -s email=admin@example.com
+~/.acme.sh/acme.sh --set-default-ca --server letsencrypt
+~/.acme.sh/acme.sh --issue -d loomy.shuaichao.xyz -w /www/wwwroot/loomy.shuaichao.xyz
+
+# 3) 安装到宝塔证书目录，续期后自动 reload nginx
+mkdir -p /www/server/panel/vhost/cert/loomy.shuaichao.xyz
+~/.acme.sh/acme.sh --install-cert -d loomy.shuaichao.xyz --ecc   --key-file       /www/server/panel/vhost/cert/loomy.shuaichao.xyz/privkey.pem   --fullchain-file /www/server/panel/vhost/cert/loomy.shuaichao.xyz/fullchain.pem   --reloadcmd      "nginx -s reload"
+
+# 4) 换成 HTTPS 版 vhost（先有证书再启用，否则 nginx 起不来）
+cp nginx/loomy-proxy-ssl.conf /www/server/panel/vhost/nginx/loomy.shuaichao.xyz.conf
+nginx -t && nginx -s reload
+```
+
+验证：`curl -s https://loomy.shuaichao.xyz/health`；续期状态 `~/.acme.sh/acme.sh --list`。
+80 端口保留 `/.well-known/acme-challenge/` 直出（不跳转），443 承载业务，其余 http 请求 301 到 https；
+HSTS 只给 `max-age=31536000`，未加 `includeSubDomains`。
+
+> 宝塔面板如果后来给同名站点点过「保存」，会重写这份 vhost —— 反代与 SSE 参数需按模板补回。
+
 ## 更新
 
 ```bash
