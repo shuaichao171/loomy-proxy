@@ -93,6 +93,21 @@ verify     →  {account, created, profile, after:{models}}
 发码有同号/同 IP 每小时配额与冷却；验证码只出现在上游请求里，审计只记掩码与结果。
 完整协议、错误码与 curl 示例见 [`docs/LOGIN-FLOW.md`](docs/LOGIN-FLOW.md)。
 
+## 部署
+
+服务器部署（Docker + Nginx 反代，无需在服务器上 build）见 [`deploy/README.md`](deploy/README.md)：
+
+```bash
+git archive --format=tar.gz -o /tmp/loomy-src.tgz HEAD      # 或直接 rsync 工作区
+scp /tmp/loomy-src.tgz root@<server>:/tmp/
+ssh root@<server>
+mkdir -p /www/wwwroot/docker/loomy-proxy-src && tar xzf /tmp/loomy-src.tgz -C /www/wwwroot/docker/loomy-proxy-src
+cd /www/wwwroot/docker/loomy-proxy-src/deploy && bash install.sh
+```
+
+`install.sh` 会生成 `.env`（含管理台密码）、`config/config.json`，拉起容器并做健康检查；
+对外入口由 Nginx vhost 反代（模板 [`deploy/nginx/loomy-proxy.conf`](deploy/nginx/loomy-proxy.conf)，SSE 已关缓冲）。
+
 ## 命令
 
 ```bash

@@ -1,6 +1,6 @@
 # 部署手册
 
-两种模式，都不需要在服务器上做 `docker build`（服务器 4C/3.8G 无 swap，见 `sub2api_alt` 的铁律）。
+两种模式，都不需要在服务器上做 `docker build`（目标服务器 4C/3.8G 无 swap，禁止在机上 build）。
 
 | 模式 | 用什么 | 适用 |
 | --- | --- | --- |
@@ -12,12 +12,14 @@
 ```
 /www/wwwroot/docker/loomy-proxy-deploy/
   docker-compose.yml          # install.sh 从 deploy/docker-compose.source.yml 复制
-  docker-compose.override.yml # 可选：接入 sub2api 网络时由 install.sh 生成
+  docker-compose.override.yml # 可选：接入其它 compose 网络时由 install.sh 生成
   .env                        # 环境变量（600，含管理台密码）
   app/                        # 源码（只读挂载到容器 /app）
   config/config.json          # 服务器配置（600）
   data/                       # accounts.json / keys.json / usage.jsonl（600）
   secrets/.env.prod           # 讯飞 AK/SK（600，仅短信登录/校验用）
+  # Nginx 入口在宿主机：/www/server/panel/vhost/nginx/loomy.shuaichao.xyz.conf
+  #   模板见 deploy/nginx/loomy-proxy.conf
 ```
 
 容器只绑 `127.0.0.1:8787`。本机访问管理台：
@@ -38,7 +40,8 @@ rsync -az --delete \
 # 服务器：安装（会同步到 app/、生成 .env 与 config、拉起容器）
 ssh root@154.40.58.3
 cd /www/wwwroot/docker/loomy-proxy-src/deploy
-bash install.sh --network auto      # auto = 自动接入 sub2api 的 compose 网络
+bash install.sh                     # 只绑 127.0.0.1，对外走 Nginx
+# bash install.sh --network auto    # 可选：接入同机其它 compose 网络（容器名互访）
 ```
 
 `install.sh` 幂等：已存在的 `.env`、`config/config.json`、`data/` 不会被覆盖。
@@ -59,23 +62,52 @@ docker exec -it loomy-proxy node src/cli.js login --phone 1xxxxxxxxxx --send-onl
 docker exec -it loomy-proxy node src/cli.js login --login-id login_xxx --code 123456
 ```
 
-## 给 sub2api 当上游
+## 公网访问（Nginx 反代）
 
-容器接入 sub2api 网络后，sub2api 里新建 **OpenAI 类型渠道**：
-
-```text
-base_url = http://loomy-proxy:8787/v1
-api_key  = sk-loomy-…（在 LoomyProxy 里创建）
-models   = spark-x2.6, qwen3.8-flash, …（先 GET /v1/models 看）
-```
-
-创建密钥：
+容器只绑 `127.0.0.1:8787`，对外由 Nginx 反代。模板 [`nginx/loomy-proxy.conf`](nginx/loomy-proxy.conf)
+提供三个入口：域名、服务器 IP、备用端口 8788。
 
 ```bash
-docker exec loomy-proxy node src/cli.js key create --name sub2api
+# 服务器：装 vhost（把 server_name / IP 改成自己的）
+scp deploy/nginx/loomy-proxy.conf root@<server>:/www/server/panel/vhost/nginx/loomy.shuaichao.xyz.conf
+nginx -t && nginx -s reload
 ```
 
-注意：Loomy 上游按 `points_consumed` 真实扣积分，sub2api 侧的倍率/额度只是本地记账。
+关键点：SSE 必须关闭缓冲，模板里已经带上
+`proxy_buffering off; proxy_request_buffering off; proxy_read_timeout 900s; X-Accel-Buffering: no`。
+
+DNS：在 Cloudflare 给 `loomy.shuaichao.xyz` 加 A 记录指向服务器公网 IP。
+- 走 Cloudflare 橙云（代理）→ 源站可以用 HTTP，HTTPS 在边缘终结；记得把 SSL 模式设为
+  **Flexible**（源站没证书）或 **Full**（源站也装了证书）。
+- 想让源站直接上 HTTPS：DNS 生效后在宝塔面板申请 Let's Encrypt 证书即可。
+
+访问形态：
+
+```text
+管理台   https://loomy.shuaichao.xyz/admin        # 需要 .env 里的 adminPassword
+API      https://loomy.shuaichao.xyz/v1           # 需要 sk-loomy-… 下游密钥
+健康检查 https://loomy.shuaichao.xyz/health       # 无需鉴权
+```
+
+创建下游密钥（明文只显示一次）：
+
+```bash
+docker exec loomy-proxy node src/cli.js key create --name my-client
+docker exec loomy-proxy node src/cli.js key list
+docker exec loomy-proxy node src/cli.js key rm <key_id>
+```
+
+> 密钥/账号从 CLI 写入后会立即生效（`reload-on-miss` / `reload-on-empty`），不需要重启容器。
+
+客户端配置：
+
+```bash
+export OPENAI_BASE_URL=https://loomy.shuaichao.xyz/v1
+export OPENAI_API_KEY=sk-loomy-…
+curl -s "$OPENAI_BASE_URL/models" -H "Authorization: Bearer $OPENAI_API_KEY" | head -c 200
+```
+
+注意：Loomy 上游按 `points_consumed` 真实扣积分，多人共用同一账号池时额度是共享的。
 
 ## 更新
 
