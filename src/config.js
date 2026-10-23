@@ -43,6 +43,9 @@ const DEFAULTS = {
     cooldownSeconds: 60,
     sessionAffinity: true,
     affinityTtlSeconds: 1800,
+    preferDailyPoints: true,
+    pointsRefreshSeconds: 300,
+    pointsMinRefreshSeconds: 60,
   },
   login: {
     codeTtlSeconds: 300,
@@ -51,6 +54,8 @@ const DEFAULTS = {
     maxAttempts: 5,
     maxSendsPerHour: 5,
     maxPending: 200,
+    autoBonus: true,
+    autoInvite: true,
   },
   logging: {
     level: 'info',
@@ -124,6 +129,8 @@ function applyEnvOverrides (config, env = process.env) {
   if (env.LOOMY_PROXY_PORT) next.server.port = num(env.LOOMY_PROXY_PORT, next.server.port)
   if (env.LOOMY_PROXY_ADMIN_PASSWORD) next.server.adminPassword = env.LOOMY_PROXY_ADMIN_PASSWORD
   if (env.LOOMY_PROXY_UPSTREAM_BASE) next.upstream.baseUrl = env.LOOMY_PROXY_UPSTREAM_BASE
+  if (env.LOOMY_PROXY_UPSTREAM_CONNECT_TIMEOUT_MS) next.upstream.connectTimeoutMs = num(env.LOOMY_PROXY_UPSTREAM_CONNECT_TIMEOUT_MS, next.upstream.connectTimeoutMs)
+  if (env.LOOMY_PROXY_UPSTREAM_CONNECT_RETRIES) next.upstream.connectRetries = num(env.LOOMY_PROXY_UPSTREAM_CONNECT_RETRIES, next.upstream.connectRetries)
   if (env.LOOMY_PROXY_ACCOUNT_BASE) next.auth.accountBaseUrl = env.LOOMY_PROXY_ACCOUNT_BASE
   if (env.LOOMY_PROXY_LOOMY_DIR) next.auth.loomyInstallDir = env.LOOMY_PROXY_LOOMY_DIR
   if (env.LOOMY_PROXY_ENV_FILE) next.auth.envFile = env.LOOMY_PROXY_ENV_FILE
@@ -137,6 +144,18 @@ function applyEnvOverrides (config, env = process.env) {
   if (env.LOOMY_PROXY_LOGIN_MAX_ATTEMPTS !== undefined) {
     next.login.maxAttempts = num(env.LOOMY_PROXY_LOGIN_MAX_ATTEMPTS, next.login.maxAttempts)
   }
+  if (env.LOOMY_PROXY_LOGIN_AUTO_BONUS !== undefined) {
+    next.login.autoBonus = bool(env.LOOMY_PROXY_LOGIN_AUTO_BONUS, next.login.autoBonus)
+  }
+  if (env.LOOMY_PROXY_LOGIN_AUTO_INVITE !== undefined) {
+    next.login.autoInvite = bool(env.LOOMY_PROXY_LOGIN_AUTO_INVITE, next.login.autoInvite)
+  }
+  if (env.LOOMY_PROXY_PREFER_DAILY_POINTS !== undefined) {
+    next.pool.preferDailyPoints = bool(env.LOOMY_PROXY_PREFER_DAILY_POINTS, next.pool.preferDailyPoints)
+  }
+  if (env.LOOMY_PROXY_POINTS_REFRESH_SECONDS !== undefined) {
+    next.pool.pointsRefreshSeconds = num(env.LOOMY_PROXY_POINTS_REFRESH_SECONDS, next.pool.pointsRefreshSeconds)
+  }
   return next
 }
 
@@ -146,11 +165,16 @@ function normalizeConfig (config) {
   next.server.cors = bool(next.server.cors, DEFAULTS.server.cors)
   next.upstream.baseUrl = String(next.upstream.baseUrl || DEFAULTS.upstream.baseUrl).replace(/\/+$/, '')
   next.upstream.timeoutMs = num(next.upstream.timeoutMs, DEFAULTS.upstream.timeoutMs)
+  next.upstream.connectTimeoutMs = clampInt(next.upstream.connectTimeoutMs, 1000, 60000, DEFAULTS.upstream.connectTimeoutMs)
+  next.upstream.connectRetries = clampInt(next.upstream.connectRetries, 0, 3, DEFAULTS.upstream.connectRetries)
   next.upstream.sendTraceparent = bool(next.upstream.sendTraceparent, true)
   next.upstream.sendTrackingHeaders = bool(next.upstream.sendTrackingHeaders, true)
   next.pool.maxRetries = Math.max(0, Math.min(5, num(next.pool.maxRetries, 2)))
   next.pool.cooldownSeconds = Math.max(1, num(next.pool.cooldownSeconds, 60))
   next.pool.sessionAffinity = bool(next.pool.sessionAffinity, true)
+  next.pool.preferDailyPoints = bool(next.pool.preferDailyPoints, DEFAULTS.pool.preferDailyPoints)
+  next.pool.pointsRefreshSeconds = clampInt(next.pool.pointsRefreshSeconds, 30, 3600, DEFAULTS.pool.pointsRefreshSeconds)
+  next.pool.pointsMinRefreshSeconds = clampInt(next.pool.pointsMinRefreshSeconds, 5, 600, DEFAULTS.pool.pointsMinRefreshSeconds)
   if (!['round-robin', 'weighted', 'fill-first'].includes(next.pool.strategy)) {
     next.pool.strategy = 'round-robin'
   }
@@ -163,6 +187,8 @@ function normalizeConfig (config) {
   next.login.maxAttempts = clampInt(next.login.maxAttempts, 1, 10, DEFAULTS.login.maxAttempts)
   next.login.maxSendsPerHour = clampInt(next.login.maxSendsPerHour, 1, 100, DEFAULTS.login.maxSendsPerHour)
   next.login.maxPending = clampInt(next.login.maxPending, 1, 1000, DEFAULTS.login.maxPending)
+  next.login.autoBonus = bool(next.login.autoBonus, DEFAULTS.login.autoBonus)
+  next.login.autoInvite = bool(next.login.autoInvite, DEFAULTS.login.autoInvite)
   return next
 }
 

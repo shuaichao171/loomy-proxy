@@ -38,6 +38,8 @@ POST /admin/api/login/verify     {loginId, code}
 - **同人重复登录 = 刷新 auth**。按 `userid`（其次 `phone`）匹配已有账号，
   只替换 `session` 并把状态改回 `active`，不会堆出重复账号。
 - **验证码绝不落日志**。审计只写 `data/login-audit.jsonl`：动作、手机号掩码、IP、结果、账号 id。
+- **建号后自动领权益**。登录成功先补新手任务、再从池内摸一个邀请码绑定（幂等，重跑不重复加分），
+  开关 `login.autoBonus` / `login.autoInvite`，细则见 [`ACCOUNT-BONUS.md`](ACCOUNT-BONUS.md)。
 - **限流是服务端强制的**：同号/同 IP 每小时最多 `maxSendsPerHour` 次发码，
   两次发码之间至少 `resendCooldownSeconds` 秒，单次登录最多试 `maxAttempts` 次验证码。
 
@@ -123,5 +125,8 @@ curl -s -X POST http://127.0.0.1:8787/admin/api/login/verify \
   此时重新走一次本流程即可刷新（同一账号不会重复）。
 - 账号服务 `appid=GM3LOOMY` 的 AK/SK 来自客户端安装包，属于客户端凭据；
   本网关只在本机解密使用，不写入仓库、不回显到接口输出。
+- 拿到 session 后别忘了领新账号的一次性权益（新手任务 10000 + 邀请码 5000），
+  幂等且只需一条命令：`node src/cli.js bonus --account <id|名称> --invite <池内邀请码>`，
+  细则见 [`ACCOUNT-BONUS.md`](ACCOUNT-BONUS.md)。
 - 未实现：图形验证码/滑块（上游当前不需要）、密码登录（需要 `getPuKey` 的 RSA 公钥流程）、
   WeChat 扫码绑定。需要时可在此流程上扩展 `start()` 的 scene 分支。

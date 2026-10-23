@@ -156,9 +156,21 @@ export async function handleAdmin (ctx, req, res, url) {
     if (method === 'POST' && action === 'points') {
       const account = ctx.accountStore.get(id)
       if (!account) return sendJson(res, 404, { error: '账号不存在' })
-      const points = await ctx.upstream.fetchPoints(account.session).catch((error) => ({ ok: false, error: { message: error.message } }))
-      return sendJson(res, 200, points)
+      // 拉取余额并写回 wallet（每日 / 永久），调度器立即按新余额排序
+      const result = await ctx.pointsTracker.refreshAccount(account.id, { force: true, reason: 'admin' })
+      if (!result.ok) return sendJson(res, 400, { ok: false, error: result.error || { code: 'POINTS_FAILED' } })
+      return sendJson(res, 200, { ok: true, wallet: result.wallet, account: ctx.accountStore.toPublic(account) })
     }
+  }
+
+  // ---- 积分观测（每日 / 永久） ----
+  if (route === 'points' && method === 'GET') {
+    return sendJson(res, 200, { ok: true, points: ctx.pointsTracker.summary(), accounts: ctx.accountStore.publicList().map((account) => ({ id: account.id, wallet: account.wallet })) })
+  }
+
+  if (route === 'points/refresh' && method === 'POST') {
+    const result = await ctx.pointsTracker.refreshAll({ force: true })
+    return sendJson(res, 200, result)
   }
 
   if (route === 'accounts/import-local' && method === 'POST') {
@@ -369,6 +381,7 @@ function buildOverview (ctx) {
     },
     accounts: ctx.accountStore.summary(),
     scheduler: ctx.scheduler.summary(),
+    points: ctx.pointsTracker.summary(),
     keys: {
       total: ctx.keyStore.keys.length,
       enabled: ctx.keyStore.countEnabled(),

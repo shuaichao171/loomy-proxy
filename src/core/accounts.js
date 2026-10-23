@@ -60,6 +60,15 @@ export class AccountStore {
         errors: Number(account.stats?.errors) || 0,
         points: Number(account.stats?.points) || 0,
       },
+      // 积分钱包：daily = 每日赠送（当天有效），balance = 永久｜调度按它优先烧每日积分
+      wallet: {
+        balance: Math.max(0, Number(account.wallet?.balance) || 0),
+        daily: Math.max(0, Number(account.wallet?.daily) || 0),
+        checkedAt: Number(account.wallet?.checkedAt) || 0,
+        estimatedAt: Number(account.wallet?.estimatedAt) || 0,
+        ok: account.wallet?.ok !== false,
+        error: String(account.wallet?.error || ''),
+      },
     }
   }
 
@@ -94,6 +103,7 @@ export class AccountStore {
       createdAt: account.createdAt,
       updatedAt: account.updatedAt,
       stats: account.stats,
+      wallet: { ...account.wallet, tier: pointsTier(account), tierLabel: POINTS_TIER_LABEL[pointsTier(account)] },
       health: this.health(account),
     }
   }
@@ -183,7 +193,17 @@ export class AccountStore {
     account.lastError = ''
     account.lastUsedAt = Date.now()
     account.stats.requests += 1
-    if (points) account.stats.points += Number(points) || 0
+    if (points) {
+      const consumed = Number(points) || 0
+      account.stats.points += consumed
+      // 本地估算：先烧每日积分，再烧永久积分；PointsTracker 刷新后用真实余额覆盖
+      if (consumed > 0 && account.wallet?.checkedAt) {
+        const fromDaily = Math.min(account.wallet.daily, consumed)
+        account.wallet.daily = Math.max(0, account.wallet.daily - fromDaily)
+        account.wallet.balance = Math.max(0, account.wallet.balance - (consumed - fromDaily))
+        account.wallet.estimatedAt = Date.now()
+      }
+    }
     this.persist()
   }
 
@@ -232,6 +252,26 @@ export class AccountStore {
     this.persist()
   }
 
+  /** 写入上游积分余额（每日 / 永久）。由 PointsTracker 拉取后调用。 */
+  markPoints (id, { balance = null, daily = null, ok = true, error = '' } = {}) {
+    const account = this.get(id)
+    if (!account) return null
+    account.wallet = account.wallet || { balance: 0, daily: 0, checkedAt: 0, estimatedAt: 0, ok: true, error: '' }
+    if (ok) {
+      if (balance !== null && balance !== undefined) account.wallet.balance = Math.max(0, Number(balance) || 0)
+      if (daily !== null && daily !== undefined) account.wallet.daily = Math.max(0, Number(daily) || 0)
+      account.wallet.estimatedAt = 0
+      account.wallet.error = ''
+    } else {
+      account.wallet.error = String(error || '').slice(0, 200)
+    }
+    account.wallet.ok = ok
+    account.wallet.checkedAt = Date.now()
+    account.updatedAt = Date.now()
+    this.persist()
+    return { ...account.wallet, tier: pointsTier(account) }
+  }
+
   summary () {
     const counts = { total: this.accounts.length, active: 0, cooling: 0, invalid: 0, disabled: 0 }
     for (const account of this.accounts) {
@@ -242,8 +282,27 @@ export class AccountStore {
       else counts.disabled += 1
     }
     counts.points = this.accounts.reduce((sum, account) => sum + (account.stats?.points || 0), 0)
+    counts.dailyPoints = this.accounts.reduce((sum, account) => sum + (Number(account.wallet?.daily) || 0), 0)
+    counts.permanentPoints = this.accounts.reduce((sum, account) => sum + (Number(account.wallet?.balance) || 0), 0)
     return counts
   }
 }
+
+/**
+ * 账号积分档位（调度排序用）：
+ *   0 daily     —— 还有每日赠送积分（当天过期，优先烧）
+ *   1 unknown   —— 还没拉到余额（不阻塞其它账号）
+ *   2 permanent —— 每日已用尽，只剩永久积分
+ *   3 empty     —— 每日与永久都没有
+ */
+export function pointsTier (account = {}) {
+  const wallet = account.wallet || {}
+  if (!wallet.checkedAt) return 1
+  if (Number(wallet.daily) > 0) return 0
+  if (Number(wallet.balance) > 0) return 2
+  return 3
+}
+
+export const POINTS_TIER_LABEL = { 0: 'daily', 1: 'unknown', 2: 'permanent', 3: 'empty' }
 
 export { STATUS as ACCOUNT_STATUS }

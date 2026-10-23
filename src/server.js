@@ -23,6 +23,8 @@ import { ApiKeyStore } from './core/keys.js'
 import { UsageLedger } from './core/usage.js'
 import { ModelCatalog } from './core/models.js'
 import { Scheduler } from './core/scheduler.js'
+import { PointsTracker } from './core/points.js'
+import { claimAccountBonus, summarizeBonus } from './core/bonus.js'
 import { LoomyUpstream } from './upstream/client.js'
 import { XfyunAccountClient } from './auth/account.js'
 import { LoginFlow } from './auth/login-flow.js'
@@ -48,16 +50,20 @@ export function createContext ({ config = loadConfig(), logger = null, env = pro
     logger: log,
   })
   const catalog = new ModelCatalog({ cacheFile: path.join(DATA_DIR, 'models.json'), logger: log })
-  const scheduler = new Scheduler({ accountStore, config, logger: log })
   const upstream = new LoomyUpstream({
     baseUrl: config.upstream.baseUrl,
     clientVersion: config.upstream.clientVersion,
     timeoutMs: config.upstream.timeoutMs,
+    connectTimeoutMs: config.upstream.connectTimeoutMs,
+    connectRetries: config.upstream.connectRetries,
     sendTraceparent: config.upstream.sendTraceparent,
     sendTrackingHeaders: config.upstream.sendTrackingHeaders,
     requestPurpose: config.upstream.requestPurpose,
     logger: log,
   })
+  // 积分观测（每日 / 永久积分）——调度器据此把「还有每日积分」的账号排到前面
+  const pointsTracker = new PointsTracker({ accountStore, upstream, config, logger: log })
+  const scheduler = new Scheduler({ accountStore, config, logger: log, pointsTracker })
 
   const envConfig = resolveLoomyEnvConfig({
     installDir: config.auth.loomyInstallDir,
@@ -80,6 +86,8 @@ export function createContext ({ config = loadConfig(), logger = null, env = pro
     usage,
     catalog,
     scheduler,
+    pointsTracker,
+    upstream,
     upstream,
     accountClient,
     envConfig,
@@ -88,6 +96,7 @@ export function createContext ({ config = loadConfig(), logger = null, env = pro
     applyConfig (next) {
       ctx.config = next
       scheduler.refreshConfig(next)
+      pointsTracker.refreshConfig(next)
       if (ctx.loginFlow) ctx.loginFlow.refreshConfig(next)
       upstream.baseUrl = next.upstream.baseUrl
       upstream.clientVersion = next.upstream.clientVersion
@@ -128,6 +137,8 @@ export function createContext ({ config = loadConfig(), logger = null, env = pro
     finishRequest ({ account, key, model, endpoint, stream, usage: usageInfo, latencyMs, chatId, status = 'ok' }) {
       const points = usageInfo?.points || 0
       scheduler.success(account.id, { points })
+      // 本地估算可能把每日积分扣到 0：下一次调度前先向上游核对一次（非阻塞，有节流）
+      if (points > 0) pointsTracker.poke([accountStore.get(account.id)].filter(Boolean))
       keyStore.recordUsage(key?.id, { points, tokens: usageInfo?.totalTokens || 0 })
       usage.record({
         endpoint,
@@ -148,8 +159,30 @@ export function createContext ({ config = loadConfig(), logger = null, env = pro
   }
 
   /**
+   * 建号后的自动领权益：新手任务 + 池内邀请码（config.login.autoBonus / autoInvite）。
+   *
+   * 上游两个接口都是幂等记账，重跑不会重复加分；失败只记 warning，不影响登录结果。
+   */
+  async function autoClaimBonus (account) {
+    if (!ctx.config.login?.autoBonus) return null
+    try {
+      return await claimAccountBonus({
+        accountStore,
+        upstream,
+        accountId: account.id,
+        autoInvite: ctx.config.login?.autoInvite !== false,
+        logger: log,
+      })
+    } catch (error) {
+      log.warn('自动领取新号权益失败', { accountId: account.id, error: error.message })
+      return null
+    }
+  }
+
+  /**
    * 短信登录流程（手机号 + 验证码 → session → 账号）。
-   * 与账号池解耦：只负责「把 auth 换成可用的 account」，登录成功后触发一次模型同步。
+   * 与账号池解耦：只负责「把 auth 换成可用的 account」，登录成功后同步模型目录、
+   * 领一次新号权益（幂等）、再刷一次余额。
    */
   ctx.loginFlow = new LoginFlow({
     accountClient,
@@ -160,14 +193,20 @@ export function createContext ({ config = loadConfig(), logger = null, env = pro
     pendingFile: path.join(DATA_DIR, 'login-pending.json'),
     hooks: {
       async afterLogin (account) {
-        const refresh = await ctx.refreshModels({ silent: true })
-        return { models: refresh }
+        // 先领权益再刷余额，否则 wallet 里看不到刚到的积分
+        const bonus = await autoClaimBonus(account)
+        const [refresh, points] = await Promise.all([
+          ctx.refreshModels({ silent: true }),
+          ctx.pointsTracker.refreshAccount(account.id, { force: true, reason: 'after-login' }).catch(() => null),
+        ])
+        return { models: refresh, points: points?.wallet || null, bonus: summarizeBonus(bonus) }
       },
     },
   })
 
   return ctx
 }
+
 
 /** 简易令牌桶限流：按密钥 ID 计每分钟请求数。 */
 function createRateLimiter () {
@@ -336,6 +375,9 @@ export async function startServer ({ config = loadConfig(), logger = null } = {}
     ctx.logger.warn('还没有下游密钥：执行 `node src/cli.js key create` 生成')
   }
   await ctx.refreshModels({ silent: true })
+  // 启动时先拉一轮积分余额，并开启定时刷新（失败不影响启动）
+  ctx.pointsTracker.start()
+  ctx.pointsTracker.refreshAll({ force: true }).catch(() => {})
   const server = createServer(ctx)
   const host = ctx.config.server.host
   const port = ctx.config.server.port
@@ -343,6 +385,7 @@ export async function startServer ({ config = loadConfig(), logger = null } = {}
     server.once('error', reject)
     server.listen(port, host, resolve)
   })
+  server.on('close', () => ctx.pointsTracker.stop())
   return { ctx, server, host, port }
 }
 

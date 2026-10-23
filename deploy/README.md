@@ -35,7 +35,7 @@ ssh -L 8787:127.0.0.1:8787 root@154.40.58.3
 # 本机：把源码推到服务器
 rsync -az --delete \
   --exclude .git --exclude data --exclude config/config.json --exclude node_modules \
-  E:/Loomy/LoomyProxy/ root@154.40.58.3:/www/wwwroot/docker/loomy-proxy-src/
+  E:/ai-work2/LoomyProxy/ root@154.40.58.3:/www/wwwroot/docker/loomy-proxy-src/
 
 # 服务器：安装（会同步到 app/、生成 .env 与 config、拉起容器）
 ssh root@154.40.58.3
@@ -142,7 +142,7 @@ HSTS 只给 `max-age=31536000`，未加 `includeSubDomains`。
 ```bash
 # 本机
 rsync -az --delete --exclude .git --exclude data --exclude config/config.json \
-  E:/Loomy/LoomyProxy/ root@154.40.58.3:/www/wwwroot/docker/loomy-proxy-src/
+  E:/ai-work2/LoomyProxy/ root@154.40.58.3:/www/wwwroot/docker/loomy-proxy-src/
 # 服务器
 cd /www/wwwroot/docker/loomy-proxy-src/deploy && bash install.sh --network auto
 #   或只同步 app/ 后：cd /www/wwwroot/docker/loomy-proxy-deploy && docker compose restart
@@ -160,6 +160,40 @@ docker exec loomy-proxy node src/cli.js accounts    # 账号池
 ```
 
 回滚：`app/` 是源码副本，保留上一版目录或从 git 重新同步即可；`data/` 不动就不会丢账号与密钥。
+
+## 接入 sub2api（同机 + 分组 lommy）
+
+loomy-proxy 与 sub2api 同在 `sub2api-deploy_sub2api-network` 网络，容器内地址是
+`http://loomy-proxy:8787/v1`（OpenAI 兼容）。一次性的接线步骤：
+
+```bash
+cd /www/wwwroot/docker/loomy-proxy-deploy
+AP=$(grep -m1 '^LOOMY_PROXY_ADMIN_PASSWORD=' .env | cut -d= -f2-)
+KEY=$(curl -s -X POST http://127.0.0.1:8787/admin/api/keys \
+  -H "Authorization: Bearer $AP" -H 'Content-Type: application/json' \
+  -d '{"name":"sub2api"}' | jq -r .plaintext)      # 57 字符，只返回一次
+
+cd /www/wwwroot/docker/sub2api-deploy
+TOKEN=$(curl -s -X POST http://127.0.0.1:8080/api/v1/auth/login -H 'Content-Type: application/json' \
+  -d "{\"email\":\"$(grep -m1 '^ADMIN_EMAIL=' .env | cut -d= -f2-)\",\"password\":\"$(grep -m1 '^ADMIN_PASSWORD=' .env | cut -d= -f2-)\"}" | jq -r .data.access_token)
+curl -s -X POST http://127.0.0.1:8080/api/v1/admin/groups -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' -d '{"name":"lommy","platform":"openai"}'
+curl -s -X POST http://127.0.0.1:8080/api/v1/admin/accounts -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' -d "{\"name\":\"loomy-proxy\",\"platform\":\"openai\",\"type\":\"apikey\",
+  \"credentials\":{\"api_key\":\"$KEY\",\"base_url\":\"http://loomy-proxy:8787/v1\",\"model_mapping\":{}},\"group_ids\":[<分组id>]}"
+```
+
+注意事项：
+
+- **建密钥必须走管理 API/管理台**。网关进程在跑时用 `docker exec loomy-proxy node src/cli.js key create`
+  会先写 `data/keys.json`，紧接着被运行中进程的内存态回写覆盖，表现为“创建成功但校验 401”。
+- sub2api 账号（id 3643 / 名称 `loomy-proxy`）绑定分组 `lommy`（id 28）；改完凭据后记得
+  `POST /api/v1/admin/accounts/<id>/recover-state` + `POST .../schedulable {"schedulable":true}`，
+  否则一次失败的连通测试会把账号停在 `error` / 不可调度。
+- 验证：`POST /api/v1/admin/accounts/<id>/test` 会以流式方式回包内容（默认模型 `gpt-5.4`），
+  能出字就说明鉴权、转发、SSE 全部通。
+- loomy-proxy 的模型目录是 Loomy 上游的 13 个模型（spark-x2.6 / qwen3.8-flash / GLM-5.3-Flash …），
+  需要映射成 sub2api 侧模型名时写在账号的 `credentials.model_mapping`。
 
 ## 镜像模式（可选）
 

@@ -141,12 +141,13 @@
         <button id="btnSmsLogin">短信登录</button>
         <button id="btnAddSession">粘贴 session</button>
         <button id="btnCheckAll">校验全部</button>
+        <button id="btnRefreshPoints" class="ghost">刷新积分</button>
         <button id="btnRefreshAccounts" class="ghost">刷新</button>
       </div>
       <div class="card">
         <table>
           <thead><tr>
-            <th>账号</th><th>状态</th><th>手机</th><th>权重</th><th>请求</th><th>积分</th><th>最近使用</th><th>操作</th>
+            <th>账号</th><th>状态</th><th>手机</th><th>权重</th><th>请求</th><th>每日积分</th><th>永久积分</th><th>已用积分</th><th>最近使用</th><th>操作</th>
           </tr></thead>
           <tbody id="accountsBody"></tbody>
         </table>
@@ -323,6 +324,14 @@ const ACCOUNT_STATUS_MAP = {
   healthy: ['ok', '正常'], cooling: ['warn', '冷却'], invalid: ['err', '失效'], disabled: ['muted', '停用'],
 };
 
+// 每日积分 = 当天过期，优先烧；永久积分 = 每日用完才动
+function walletCell (wallet, field) {
+  if (!wallet || !wallet.checkedAt) return '<span class="hint">-</span>';
+  const value = Number(field === 'daily' ? wallet.daily : wallet.balance) || 0;
+  const sub = wallet.ok === false ? '查询失败' : fmtTime(wallet.checkedAt);
+  return `<div>${value}</div><div class="hint">${esc(sub)}</div>`;
+}
+
 async function loadAccounts () {
   const data = await api('accounts');
   state.accounts = data.accounts;
@@ -334,6 +343,8 @@ async function loadAccounts () {
       <td>${esc(account.phone || '-')}</td>
       <td><input style="width:64px" type="number" min="1" value="${account.weight}" data-weight="${esc(account.id)}" /></td>
       <td>${account.stats.requests}</td>
+      <td>${walletCell(account.wallet, 'daily')}</td>
+      <td>${walletCell(account.wallet, 'balance')}</td>
       <td>${account.stats.points}</td>
       <td class="hint">${esc(fmtTime(account.lastUsedAt))}</td>
       <td><div class="row">
@@ -342,8 +353,8 @@ async function loadAccounts () {
         <button class="danger" data-action="delete" data-id="${esc(account.id)}">删除</button>
       </div></td>
     </tr>`;
-  }).join('') || '<tr><td colspan="8" class="hint">账号池为空：点「导入本机 Loomy 登录态」或「短信登录」</td></tr>';
-  $('accountsHint').textContent = `上游 ${data.upstreamBase} · 调度 ${state.overview?.scheduler?.strategy || ''} · 本机登录态 ${data.localSession.found ? '已找到' : '未找到'}（${data.localSession.file}）`;
+  }).join('') || '<tr><td colspan="10" class="hint">账号池为空：点「导入本机 Loomy 登录态」或「短信登录」</td></tr>';
+  $('accountsHint').textContent = `上游 ${data.upstreamBase} · 调度 ${state.overview?.scheduler?.strategy || ''} · 积分优先 ${state.overview?.points?.enabled === false ? '关' : '开'}（每日 ${state.overview?.points?.dailyPoints ?? '?'} / 永久 ${state.overview?.points?.permanentPoints ?? '?'}） · 本机登录态 ${data.localSession.found ? '已找到' : '未找到'}`;
 }
 
 async function loadKeys () {
@@ -438,6 +449,14 @@ document.querySelectorAll('nav.tabs button').forEach((button) => {
 });
 
 $('btnRefreshAccounts').onclick = loadAccounts;
+$('btnRefreshPoints').onclick = async () => {
+  try {
+    const result = await api('points/refresh', { method: 'POST' });
+    toast(`积分已刷新：成功 ${result.refreshed} · 失败 ${result.failed}`);
+    renderOverview(await api('overview'));
+    await loadAccounts();
+  } catch (error) { toast(error.message, true); }
+};
 $('btnRefreshKeys').onclick = loadKeys;
 $('btnRefreshUsage').onclick = loadUsage;
 $('btnRefreshLogs').onclick = loadLogs;
@@ -559,10 +578,19 @@ $('btnSmsLogin').onclick = () => {
         const result = await api('login/verify', { method: 'POST', body: { loginId, code } });
         const account = result.account || {};
         const models = result.after?.models;
+        const bonus = result.after?.bonus;
+        const bonusParts = [];
+        if (bonus?.invite?.status === 'bound') {
+          bonusParts.push(`已绑邀请码 ${bonus.invite.inviteCode}${bonus.invite.fromLabel ? `（来自 ${bonus.invite.fromLabel}）` : ''}`);
+        } else if (bonus?.invite?.status === 'no-code') {
+          bonusParts.push('池内暂无可用邀请码');
+        }
+        if (bonus?.tasks?.claimed > 0) bonusParts.push(`补领新手任务 ${bonus.tasks.claimed} 条`);
         $('mResult').innerHTML = [
           `<div class="tag ok">${result.created ? '登录成功，账号已入库' : '登录成功，已刷新该账号 auth'}</div>`,
           `<div style="margin-top:8px">${account.nickname || '(无昵称)'} · ${account.phone || ''} · 状态 ${account.status || ''}</div>`,
           `<div class="hint" style="margin-top:4px">账号 ${account.id || ''}${models?.ok ? ` · 模型 ${models.count} 个` : ''}</div>`,
+          bonusParts.length ? `<div class="hint" style="margin-top:4px">权益已自动领取：${bonusParts.join(' · ')}</div>` : '',
         ].join('');
         $('mVerify').disabled = true;
         $('mCode').disabled = true;

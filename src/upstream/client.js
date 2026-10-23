@@ -92,8 +92,27 @@ export function parseErrorEnvelope (payload) {
   }
 }
 
+/** 连接/首字节超时（自建），用于区分「连不上」与「上游业务失败」。 */
+export const CONNECT_TIMEOUT_CODE = 'UPSTREAM_CONNECT_TIMEOUT'
+
+const CONNECT_FAILURE_CODES = new Set([
+  CONNECT_TIMEOUT_CODE,
+  'UND_ERR_CONNECT_TIMEOUT', 'UND_ERR_HEADERS_TIMEOUT', 'UND_ERR_SOCKET', 'UND_ERR_CLOSED',
+  'ECONNRESET', 'ECONNREFUSED', 'EPIPE', 'ETIMEDOUT', 'EAI_AGAIN',
+  'ENETUNREACH', 'EHOSTUNREACH', 'ENOTFOUND',
+])
+
+export function errorCode (error) {
+  return String(error?.code || error?.cause?.code || '').trim()
+}
+
+/** 是否属于连接层失败（一个字节响应都还没拿到，可安全重试）。 */
+export function isConnectFailure (error) {
+  return CONNECT_FAILURE_CODES.has(errorCode(error))
+}
+
 export class LoomyUpstream {
-  constructor ({ baseUrl, clientVersion = '', timeoutMs = 600000, sendTraceparent = true, sendTrackingHeaders = true, requestPurpose = 'chat.message', logger = null }) {
+  constructor ({ baseUrl, clientVersion = '', timeoutMs = 600000, connectTimeoutMs = 8000, connectRetries = 1, sendTraceparent = true, sendTrackingHeaders = true, requestPurpose = 'chat.message', logger = null }) {
     this.baseUrl = String(baseUrl || '').replace(/\/+$/, '')
     this.clientVersion = clientVersion
     this.timeoutMs = timeoutMs
@@ -101,6 +120,8 @@ export class LoomyUpstream {
     this.sendTrackingHeaders = sendTrackingHeaders
     this.requestPurpose = requestPurpose
     this.logger = logger
+    this.connectTimeoutMs = Math.max(1000, Number(connectTimeoutMs) || 8000)
+    this.connectRetries = Math.max(0, Math.min(3, Number(connectRetries) || 0))
   }
 
   resolveUrl (path) {
@@ -118,35 +139,79 @@ export class LoomyUpstream {
   }
 
   /** 直连上游，返回原生 Response（调用方决定怎么消费）。 */
+  /** 直连上游，返回原生 Response（调用方决定怎么消费）。 */
   async fetch (account, path, { method = 'POST', body = null, headers = {}, signal = null, timeoutMs = 0 } = {}) {
     const url = this.resolveUrl(path)
+    const payload = method === 'GET' || method === 'HEAD'
+      ? undefined
+      : (typeof body === 'string' ? body : body ? JSON.stringify(body) : undefined)
+    const requestHeaders = {
+      ...this.headers(account, typeof headers.__options === 'object' ? headers.__options : {}),
+      ...stripOptions(headers),
+    }
+    return this.requestWithConnectRetry(path, () => this.requestOnce(url, { method, headers: requestHeaders, body: payload }, { signal, timeoutMs }), signal)
+  }
+
+  /**
+   * 单次请求。
+   *
+   * 这里刻意不用 `AbortSignal.timeout(整体超时)` 一把梭：上游偶尔会出现
+   * 「TCP 握手成功、TLS/首字节迟迟不回」的边缘节点故障，undici 的默认
+   * connectTimeout 是 10s，且因为 TCP 已算连通不会切到另一个 A 记录地址，
+   * 于是一次抖动就吃掉整个请求。所以拆成两段：首字节用 connectTimeoutMs
+   * 快速失败（可重连重试），拿到响应头之后才交给 timeoutMs 管流式 body。
+   */
+  async requestOnce (url, options, { signal = null, timeoutMs = 0 } = {}) {
     const controller = new AbortController()
-    const timeout = setTimeout(() => controller.abort(new Error('upstream timeout')), timeoutMs || this.timeoutMs)
+    const totalTimer = setTimeout(() => controller.abort(new Error('upstream timeout')), timeoutMs || this.timeoutMs)
+    totalTimer.unref?.()
+    let connectTimedOut = false
+    const connectTimer = setTimeout(() => {
+      connectTimedOut = true
+      controller.abort(new Error('upstream connect timeout'))
+    }, this.connectTimeoutMs)
+    connectTimer.unref?.()
     const onAbort = () => controller.abort(new Error('client aborted'))
     if (signal) {
       if (signal.aborted) controller.abort(new Error('client aborted'))
       else signal.addEventListener('abort', onAbort, { once: true })
     }
+    const cleanup = () => {
+      clearTimeout(totalTimer)
+      clearTimeout(connectTimer)
+      if (signal) signal.removeEventListener('abort', onAbort)
+    }
     try {
-      const response = await fetch(url, {
-        method,
-        headers: {
-          ...this.headers(account, typeof headers.__options === 'object' ? headers.__options : {}),
-          ...stripOptions(headers),
-        },
-        body: method === 'GET' || method === 'HEAD' ? undefined : (typeof body === 'string' ? body : body ? JSON.stringify(body) : undefined),
-        signal: controller.signal,
-      })
-      response.__cleanup = () => {
-        clearTimeout(timeout)
-        if (signal) signal.removeEventListener('abort', onAbort)
-      }
+      const response = await fetch(url, { ...options, signal: controller.signal })
+      clearTimeout(connectTimer)
+      response.__cleanup = cleanup
       return response
     } catch (error) {
-      clearTimeout(timeout)
-      if (signal) signal.removeEventListener('abort', onAbort)
+      cleanup()
+      if (connectTimedOut) {
+        const timeoutError = new Error(`上游 ${Math.round(this.connectTimeoutMs / 1000)}s 内未返回响应（连接层卡住，已放弃本次尝试）`)
+        timeoutError.code = CONNECT_TIMEOUT_CODE
+        throw timeoutError
+      }
       throw error
     }
+  }
+
+  /** 连接层失败（还没拿到响应头）时立即重连重试；已经开始读流的请求绝不重试。 */
+  async requestWithConnectRetry (label, run, signal = null) {
+    const attempts = this.connectRetries + 1
+    let lastError = null
+    for (let attempt = 1; attempt <= attempts; attempt += 1) {
+      try {
+        return await run()
+      } catch (error) {
+        lastError = error
+        if (attempt >= attempts || signal?.aborted || !isConnectFailure(error)) throw error
+        this.logger?.warn?.('上游连接失败，立即重连重试', { label, attempt, code: errorCode(error) })
+        await new Promise((resolve) => setTimeout(resolve, 120 * attempt))
+      }
+    }
+    throw lastError
   }
 
   async fetchModels (account, { headers = {} } = {}) {
@@ -174,10 +239,84 @@ export class LoomyUpstream {
   async fetchPoints (session, { limit = 5 } = {}) {
     const base = this.baseUrl.replace(/\/api\/v1$/, '')
     const url = `${base}/api/v2/points/records?pageSize=${encodeURIComponent(limit)}`
-    const response = await fetch(url, {
+    const response = await this.requestWithConnectRetry('fetchPoints', () => this.requestOnce(url, {
       headers: { token: String(session || ''), Accept: 'application/json' },
-      signal: AbortSignal.timeout(20000),
-    })
+    }, { timeoutMs: 20000 }))
+    const payload = await response.json().catch(() => null)
+    const envelopeError = parseErrorEnvelope(payload)
+    if (envelopeError) return { ok: false, error: envelopeError }
+    return { ok: true, data: payload?.data || null }
+  }
+
+  /**
+   * 新手任务（客户端入口文案「做任务赢积分好礼」）快照。
+   *
+   * GET <pointsBase>/api/v1/onboarding/tasks → data{tasks{key:bool}, earned, total}
+   * 共 8 条一次性任务，全部完成合计 10000 永久积分。
+   *
+   * @param {string} session 账号 session
+   * @returns {Promise<{ok: boolean, data?: object|null, error?: string}>}
+   */
+  async fetchOnboardingTasks (session) {
+    return this.#pointsApi('/api/v1/onboarding/tasks', { session })
+  }
+
+  /**
+   * 完成一条新手任务（服务端权威记账，重复调用返回 alreadyCompleted）。
+   *
+   * POST <pointsBase>/api/v1/onboarding/tasks/complete body{key} → data{alreadyCompleted, balance}
+   *
+   * @param {string} session 账号 session
+   * @param {string} key 任务 key（first_message / pick_skill / generate_ppt / set_schedule /
+   *   install_skill / configure_remote / create_soul / share_soul）
+   */
+  async completeOnboardingTask (session, key) {
+    return this.#pointsApi('/api/v1/onboarding/tasks/complete', { session, method: 'POST', body: { key } })
+  }
+
+  /**
+   * 邀请码激活状态。GET <pointsBase>/api/v1/points/activation → data{activated, appliedInvitationCode}
+   */
+  async fetchActivation (session) {
+    return this.#pointsApi('/api/v1/points/activation', { session })
+  }
+
+  /**
+   * 绑定邀请码兑换积分（每个账号只能绑一次）。
+   *
+   * POST <pointsBase>/api/v1/points/activation body{inviteCode}
+   * → data{inviteeReward, inviterReward, permanentBalance, dailyBalance, registerReward, ...}
+   *
+   * 注意：填码方拿 inviteeReward(5000)，码主拿 inviterReward(5000)；从未领过注册奖励的账号
+   * 还会顺带补发 registerReward(5000)。
+   */
+  async bindInviteCode (session, inviteCode) {
+    return this.#pointsApi('/api/v1/points/activation', { session, method: 'POST', body: { inviteCode } })
+  }
+
+  /**
+   * 邀请码列表。GET <pointsBase>/api/v1/invitation-codes
+   * → data{list[{inviteCode, usedCount, maxUses, status}]}
+   *
+   * 每个账号一个 6 位码（status=active、maxUses 1000）；绑定过邀请码的账号才会拿到。
+   * 池内「摸一个码」给新号填就靠这个接口，见 src/core/bonus.js。
+   *
+   * @param {string} session 账号 session
+   */
+  async fetchInvitationCodes (session) {
+    return this.#pointsApi('/api/v1/invitation-codes', { session })
+  }
+
+  /** points 服务的公共请求器：同一套连接层重连 + envelope 拆包。 */
+  async #pointsApi (path, { session, method = 'GET', body = null } = {}) {
+    const base = this.baseUrl.replace(/\/api\/v1$/, '')
+    const headers = { token: String(session || ''), Accept: 'application/json' }
+    if (body !== null) headers['Content-Type'] = 'application/json'
+    const response = await this.requestWithConnectRetry(path, () => this.requestOnce(`${base}${path}`, {
+      method,
+      headers,
+      body: body === null ? undefined : JSON.stringify(body),
+    }, { timeoutMs: 20000 }))
     const payload = await response.json().catch(() => null)
     const envelopeError = parseErrorEnvelope(payload)
     if (envelopeError) return { ok: false, error: envelopeError }

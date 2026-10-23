@@ -2,7 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { Readable } from 'node:stream'
 
-import { buildUpstreamHeaders, generateTraceparent, parseErrorEnvelope, relaySse, normalizePurpose } from '../src/upstream/client.js'
+import { LoomyUpstream, buildUpstreamHeaders, generateTraceparent, parseErrorEnvelope, relaySse, normalizePurpose, isConnectFailure } from '../src/upstream/client.js'
 import { extractUsage, isEventStream } from '../src/routes/shared.js'
 import { withAccountFailover } from '../src/core/executor.js'
 
@@ -143,4 +143,74 @@ test('故障转移：无可用账号时给出明确错误', async () => {
     () => withAccountFailover({ scheduler, execute: async () => ({ response: {} }) }),
     /没有可用账号/,
   )
+})
+
+const UPSTREAM_URL = 'https://upstream.test/api/v1'
+
+async function withFetchStub (stub, run) {
+  const original = globalThis.fetch
+  globalThis.fetch = stub
+  try {
+    return await run()
+  } finally {
+    globalThis.fetch = original
+  }
+}
+
+test('连接层失败会立即重连重试一次', async () => {
+  const calls = []
+  await withFetchStub(async () => {
+    calls.push(1)
+    if (calls.length === 1) {
+      const error = new Error('connect timeout')
+      error.cause = { code: 'UND_ERR_CONNECT_TIMEOUT' }
+      throw error
+    }
+    return new Response('{"code":"000000"}', { status: 200 })
+  }, async () => {
+    const upstream = new LoomyUpstream({ baseUrl: UPSTREAM_URL, connectRetries: 1 })
+    const response = await upstream.fetch({ session: 'S' }, '/chat/completions', { body: { model: 'x' } })
+    assert.equal(response.status, 200)
+    assert.equal(calls.length, 2)
+  })
+  assert.equal(isConnectFailure({ cause: { code: 'ECONNRESET' } }), true)
+  assert.equal(isConnectFailure(new Error('boom')), false)
+})
+
+test('非连接层错误不重试（避免重复扣点数）', async () => {
+  const calls = []
+  await withFetchStub(async () => {
+    calls.push(1)
+    throw new Error('boom')
+  }, async () => {
+    const upstream = new LoomyUpstream({ baseUrl: UPSTREAM_URL, connectRetries: 2 })
+    await assert.rejects(() => upstream.fetch({ session: 'S' }, '/chat/completions', { body: {} }), /boom/)
+    assert.equal(calls.length, 1)
+  })
+})
+
+test('connectRetries=0 时连接层失败直接抛出', async () => {
+  const calls = []
+  await withFetchStub(async () => {
+    calls.push(1)
+    const error = new Error('refused')
+    error.code = 'ECONNREFUSED'
+    throw error
+  }, async () => {
+    const upstream = new LoomyUpstream({ baseUrl: UPSTREAM_URL, connectRetries: 0 })
+    await assert.rejects(() => upstream.fetch({ session: 'S' }, '/models', { method: 'GET' }), /refused/)
+    assert.equal(calls.length, 1)
+  })
+})
+
+test('首字节超时快速失败并标成 UPSTREAM_CONNECT_TIMEOUT', async () => {
+  await withFetchStub((url, options) => new Promise((resolve, reject) => {
+    options.signal.addEventListener('abort', () => reject(new Error('aborted')), { once: true })
+  }), async () => {
+    const upstream = new LoomyUpstream({ baseUrl: UPSTREAM_URL, connectTimeoutMs: 1000, connectRetries: 0 })
+    await assert.rejects(
+      () => upstream.fetch({ session: 'S' }, '/chat/completions', { body: {} }),
+      (error) => error.code === 'UPSTREAM_CONNECT_TIMEOUT',
+    )
+  })
 })

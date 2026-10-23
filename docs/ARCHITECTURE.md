@@ -84,6 +84,59 @@ enabled=false ──► disabled（不参与调度）
 - `sessionAffinity`：按会话键（`x-loomy-chat-id` 头 → `user` 字段 → 首条消息哈希）粘账号，
   减少同一对话在账号间跳动；TTL 默认 30 分钟。
 
+### 4.1 积分优先级（每日 → 永久）
+
+上游 `GET /api/v2/points/records` 返回 `{balance, dailyBalance, …}`：
+
+| 字段 | 含义 | 特性 |
+| --- | --- | --- |
+| `dailyBalance` | 每日赠送积分 | 当天有效，跨天重置，**要优先烧掉** |
+| `balance` | 永久积分 | 不过期，用一点少一点 |
+
+扣分先后由上游服务端决定，网关能做的是「选账号」，所以把账号分成四个档位（`core/points.js`）：
+
+```
+档位 0  daily      wallet.daily > 0            ← 最高优先
+档位 1  unknown    尚未拉到余额                ← 不阻塞旧数据缺失的账号
+档位 2  permanent  每日为 0、永久 > 0         ← 所有账号每日都见底后才轮到
+档位 3  empty      两边都为 0                   ← 仍可尝试，排最后
+```
+
+- 同一档内仍由 `round-robin / weighted / fill-first` 决定顺序；会话亲和只在同一档内生效，
+  避免「为了粘会话而绕过每日积分」。
+- 余额由 `PointsTracker` 维护：启动时全量拉一次、`pool.pointsRefreshSeconds`（默认 300s）定时刷新、
+  调度路径上按 TTL 非阻塞刷新（`poke`，单账号间隔 ≥ `pointsMinRefreshSeconds`）。
+- 每次请求成功后按 `usage.points_consumed` 本地估算扣减（先扣每日再扣永久）；估算把每日扣到 0 时
+  立刻触发一次上游核对，避免估算误差导致长期误判。
+- 脚本/自动化：`node src/cli.js accounts points`、管理台「刷新积分」、`POST /admin/api/points/refresh`。
+- 关闭方式：`pool.preferDailyPoints=false`（或 `LOOMY_PROXY_PREFER_DAILY_POINTS=false`），退回纯策略调度。
+
+### 4.2 上游连接层韧性（首字节超时 + 重连）
+
+上游 `loomyad.xunfei.cn` 解析到两条 A 记录（`114.118.75.244 / .245`，TTL 600s），
+实测会出现“TCP 握手成功、TLS/首字节长时间不回”的边缘节点抽风：
+同一个时刻一个 IP 正常、另一个卡死，过几分钟又都恢复。
+
+这类失真最容易被放大，因为：
+
+- undici 默认 `connectTimeout` 是 10s，而且 TCP 层算“已连通”，所以不会切到另一个地址；
+- 网关的重试是换**账号**，host 不变，连接池还缓存着同一个 origin。
+
+所以 `upstream/client.js` 把超时拆成两段：
+
+| 选项 | 默认 | 作用 |
+| --- | --- | --- |
+| `upstream.connectTimeoutMs` | 8000 | 拿不到**响应头**就放弃本次尝试（可重试），不等 10s |
+| `upstream.connectRetries` | 1 | 连接层失败（`UND_ERR_CONNECT_TIMEOUT / ECONNRESET / ECONNREFUSED / EAI_AGAIN / ENOTFOUND / UPSTREAM_CONNECT_TIMEOUT` …）立即重连重试，新连接会重新解析 DNS，有机会落到另一个边缘 |
+| `upstream.timeoutMs` | 600000 | 拿到响应头之后，流式 body 的总时长 |
+
+两个定时器都 `unref()`，不会把 CLI 进程吊死；**已经开始读流（SSE）的请求绝不重试**，
+避免下游收到重复内容、也避免重复扣点。重试耗尽的请求会以 `NETWORK` 交给 `executor` 换账号。
+
+排查建议：不要用 `/etc/hosts` 钉单 IP（容器重建即丢）——两台边缘都可能抽风，钉死等于把可用性
+绑在一个 IP 上。先用 `curl --resolve loomyad.xunfei.cn:443:<ip> -m 8 https://loomyad.xunfei.cn/api/v1/models`
+对比两条 A 记录，再看 `docker logs` 里是否出现“上游连接失败，立即重连重试”。
+
 ## 5. 数据与安全
 
 | 文件 | 内容 | 权限 |

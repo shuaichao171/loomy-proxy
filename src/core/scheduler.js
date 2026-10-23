@@ -6,17 +6,24 @@
  *   - 冷却（cooldown）：失败账号进入冷却，冷却期内不再被选中
  *   - 会话亲和（sessionAffinity）：同一会话尽量落在同一账号，减少「换个账号重新计费/上下文抖动」
  *   - 失效（invalid）：上游返回 100002 判定登录态失效，交给管理台重新登录
+ *   - 积分优先级（preferDailyPoints）：先烧完所有账号的「每日赠送积分」，再动永久积分
+ *     —— 档位由 accounts.wallet 提供（见 core/points.js）；未知余额的账号不会阻塞其它账号
  */
 
-import { ACCOUNT_STATUS } from './accounts.js'
+import { ACCOUNT_STATUS, pointsTier } from './accounts.js'
 
 export class Scheduler {
-  constructor ({ accountStore, config, logger = null }) {
+  constructor ({ accountStore, config, logger = null, pointsTracker = null }) {
     this.accountStore = accountStore
     this.config = config
     this.logger = logger
+    this.pointsTracker = pointsTracker
     this.cursor = 0
     this.affinity = new Map()
+  }
+
+  setPointsTracker (pointsTracker) {
+    this.pointsTracker = pointsTracker
   }
 
   get strategy () {
@@ -33,6 +40,11 @@ export class Scheduler {
 
   get affinityTtlMs () {
     return (this.config.pool?.affinityTtlSeconds ?? 1800) * 1000
+  }
+
+  /** 是否按「每日积分优先」排序。默认开启。 */
+  get preferDailyPoints () {
+    return this.config.pool?.preferDailyPoints !== false
   }
 
   refreshConfig (config) {
@@ -63,22 +75,26 @@ export class Scheduler {
     const pool = this.available()
     if (pool.length === 0) return []
 
-    const ordered = []
-    const pinned = this.affinityEnabled && affinityKey ? this.resolveAffinity(affinityKey) : null
-    if (pinned) {
-      const account = pool.find((item) => item.id === pinned)
-      if (account) ordered.push(account)
-    }
+    // 顺手让积分余额保持新鲜（非阻塞，内部有 TTL 与去重）
+    this.pointsTracker?.poke(pool)
 
-    const rest = pool.filter((account) => !ordered.includes(account))
-    if (this.strategy === 'weighted') {
-      ordered.push(...weightedOrder(rest))
-    } else if (this.strategy === 'fill-first') {
-      ordered.push(...rest)
-    } else {
-      ordered.push(...this.roundRobinOrder(rest))
+    const pinnedId = this.affinityEnabled && affinityKey ? this.resolveAffinity(affinityKey) : ''
+    const groups = this.preferDailyPoints ? groupByPointsTier(pool) : [pool]
+    const ordered = []
+    for (const group of groups) {
+      if (group.length === 0) continue
+      const pinned = pinnedId ? group.find((account) => account.id === pinnedId) : null
+      if (pinned) ordered.push(pinned)
+      ordered.push(...this.strategyOrder(group.filter((account) => account !== pinned)))
     }
     return ordered
+  }
+
+  strategyOrder (pool) {
+    if (pool.length <= 1) return [...pool]
+    if (this.strategy === 'weighted') return weightedOrder(pool)
+    if (this.strategy === 'fill-first') return [...pool]
+    return this.roundRobinOrder(pool)
   }
 
   roundRobinOrder (pool) {
@@ -147,4 +163,14 @@ function weightedOrder (pool) {
     remaining.splice(index, 1)
   }
   return out
+}
+
+/**
+ * 按积分档位分细：0 有每日积分 → 1 未知 → 2 只剩永久 → 3 彻底没分。
+ * 返回数组顺序即调度优先级；同一档内由 strategy（轮询/加权/填满）决定。
+ */
+function groupByPointsTier (pool) {
+  const groups = [[], [], [], []]
+  for (const account of pool) groups[pointsTier(account)].push(account)
+  return groups
 }

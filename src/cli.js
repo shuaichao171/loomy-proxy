@@ -6,10 +6,11 @@
  *   node src/cli.js doctor           环境自检（安装目录 / 凭据 / 上游连通性）
  *   node src/cli.js login            手机号 + 短信验证码登录（交互式 / --phone --code 两段式）
  *   node src/cli.js import-local     导入本机 Loomy 客户端登录态
- *   node src/cli.js accounts         列出账号 / check / rm
+ *   node src/cli.js accounts         列出账号 / check / points / rm
  *   node src/cli.js key              创建 / 列出 / 吊销下游密钥
  *   node src/cli.js models           刷新并打印模型目录
  *   node src/cli.js probe            用账号池直接打一发上游对话，验证链路
+ *   node src/cli.js bonus            新账号权益：绑定邀请码 + 补全新手任务（做任务赢积分好礼）
  */
 
 import readline from 'node:readline/promises'
@@ -19,7 +20,8 @@ import { createLogger } from './util/log.js'
 import { createContext, startServer } from './server.js'
 import { loomyConfigRoot, loomyUserDataDir, readLocalAuthSession, readLocalUpstreamBase } from './auth/local-session.js'
 import { findEnvFiles, resolveLoomyEnvConfig } from './auth/envfile.js'
-import { maskPhone } from './core/accounts.js'
+import { maskPhone, pointsTier, POINTS_TIER_LABEL } from './core/accounts.js'
+import { claimAccountBonus, formatBonusLine } from './core/bonus.js'
 
 const [, , command = 'serve', ...args] = process.argv
 const logger = createLogger({ level: process.env.LOOMY_PROXY_LOG_LEVEL || 'info' })
@@ -103,6 +105,8 @@ async function cmdDoctor () {
   print(`账号池: ${JSON.stringify(ctx.accountStore.summary())}`)
   print(`下游密钥: ${ctx.keyStore.countEnabled()} 个启用`)
   print(`模型缓存: ${ctx.catalog.models.length} 个`)
+  const points = ctx.pointsTracker.summary()
+  print(`积分优先: ${points.enabled ? '开启（每日 → 未知 → 永久 → 无）' : '关闭'} · 每日 ${points.dailyPoints} / 永久 ${points.permanentPoints}`)
   if (ctx.accountStore.list().length > 0) {
     const check = await ctx.refreshModels({ silent: false })
     print(`上游连通性: ${check.ok ? `正常（拉取到 ${check.count} 个模型）` : `失败：${check.error}`}`)
@@ -223,6 +227,11 @@ async function cmdLogin () {
     print(`账号: ${result.profile.nickname || '(无昵称)'} ${result.profile.phone} · 状态 ${result.account.status} · 权重 ${result.account.weight}`)
     if (result.after?.models?.ok) print(`模型目录已同步: ${result.after.models.count} 个`)
     else if (result.after?.models) print(`模型同步: ${result.after.models.error || '跳过'}`)
+    if (result.after) print(formatBonusLine(result.after.bonus))
+    const wallet = result.after?.points
+    if (wallet?.ok) print(`积分: 每日 ${wallet.daily ?? 0} / 永久 ${wallet.balance ?? 0}`)
+    else if (wallet) print(`积分: 刷新失败（${wallet.error || '未知原因'}），稍后可跑 accounts points`)
+    if (result.after?.bonus?.errors?.length) print('（领权益有报错，详见上方日志；重复执行 cli bonus 可重试，幂等不会重复加分）')
   } catch (error) {
     print(`登录失败: ${error.message}${error.code ? ` (${error.code})` : ''}`)
     if (error.details?.attemptsLeft !== undefined) print(`剩余尝试次数: ${error.details.attemptsLeft}`)
@@ -249,7 +258,9 @@ async function cmdAccounts () {
       { title: '状态', value: (row) => ctx.accountStore.effectiveStatus(row) },
       { title: '权重', value: (row) => row.weight },
       { title: '请求', value: (row) => row.stats.requests },
-      { title: '积分', value: (row) => row.stats.points },
+      { title: '每日积分', value: (row) => row.wallet?.daily ?? '-' },
+      { title: '永久积分', value: (row) => row.wallet?.balance ?? '-' },
+      { title: '已用积分', value: (row) => row.stats.points },
     ])
     print('')
     print(`汇总: ${JSON.stringify(ctx.accountStore.summary())}`)
@@ -268,6 +279,23 @@ async function cmdAccounts () {
         print(`❌ ${account.id} ${error.message}`)
       }
     }
+    return
+  }
+
+  if (action === 'points' || action === 'refresh-points') {
+    // 拉一次积分余额：影响调度顺序（每日积分优先），也顺便校验 session 是否可用
+    const result = await ctx.pointsTracker.refreshAll({ force: true })
+    table(ctx.accountStore.list(), [
+      { title: 'ID', value: (row) => row.id },
+      { title: '账号', value: (row) => row.name || row.nickname || maskPhone(row.phone) },
+      { title: '每日积分', value: (row) => row.wallet?.daily ?? '-' },
+      { title: '永久积分', value: (row) => row.wallet?.balance ?? '-' },
+      { title: '档位', value: (row) => POINTS_TIER_LABEL[pointsTier(row)] },
+      { title: '余额获取', value: (row) => row.wallet?.ok === false ? '失败' : (row.wallet?.checkedAt ? new Date(row.wallet.checkedAt).toLocaleString('zh-CN', { hour12: false }) : '-') },
+    ])
+    print('')
+    print(`刷新: 成功 ${result.refreshed} / 失败 ${result.failed} / 跳过 ${result.skipped}`)
+    print(`积分优先: ${ctx.config.pool?.preferDailyPoints === false ? '关闭' : '开启（每日 → 未知 → 永久 → 无）'}`)
     return
   }
 
@@ -381,6 +409,98 @@ async function cmdProbe () {
   print(`HTTP ${response.status}`)
   print(text.slice(0, 1500))
 }
+const TASK_STATUS_LABEL = {
+  done: '已完成',
+  claimed: '已补领',
+  'dry-run': '[dry-run] 待补',
+  failed: '失败',
+}
+
+/**
+ * 新账号权益领取：邀请码 + 新手任务。
+ *
+ * 新账号（短信登录 / 导入登录态）拿到 session 后立即执行，可以拿到：
+ *   - 邀请码：填码方 +5000，码主 +5000；从未领过注册奖励的账号还会补发 +5000
+ *   - 新手任务：8 条一次性，合计 +10000 永久积分
+ *   - 合计 ≈ 20000 永久积分（已经领过的会返回 alreadyCompleted / alreadyActivated）
+ *
+ * 逻辑在 src/core/bonus.js，与网关登录后的自动领取共用一份；两个动作都是服务端幂等校验，
+ * 重跑不会重复加分：
+ *
+ *   node src/cli.js bonus --account <id|名称|手机号> [--invite CODE|auto] [--dry-run]
+ */
+async function cmdBonus () {
+  const parsed = flags(args)
+  const config = loadConfig()
+  const ctx = createContext({ config, logger })
+  const target = parsed.account || parsed._[0]
+  if (!target) throw new Error('用法: bonus --account <id|名称|手机号> [--invite CODE|auto] [--dry-run]')
+
+  const account = ctx.accountStore.get(String(target))
+  if (!account) throw new Error(`未找到账号: ${target}`)
+  const dryRun = parsed['dry-run'] === true
+  const invite = parsed.invite === true ? '' : String(parsed.invite || '').trim()
+  const autoInvite = invite === 'auto'
+  const label = account.name || account.nickname || maskPhone(account.phone)
+  print(`账号: ${label}（${account.id}）`)
+
+  const report = await claimAccountBonus({
+    accountStore: ctx.accountStore,
+    upstream: ctx.upstream,
+    accountId: account.id,
+    inviteCode: autoInvite ? '' : invite,
+    autoInvite,
+    dryRun,
+    logger,
+  })
+
+  // 1) 邀请码：每个账号只能绑一次，已激活的直接跳过
+  const inviteReport = report.invite
+  const source = inviteReport.fromLabel ? `（来自 ${inviteReport.fromLabel}）` : ''
+  if (inviteReport.status === 'already-activated') {
+    print(`邀请码: 已绑定 ${inviteReport.inviteCode}，跳过`)
+  } else if (inviteReport.status === 'bound') {
+    const rewards = inviteReport.rewards || {}
+    print(`✅ 绑定邀请码 ${inviteReport.inviteCode}${source}：填写奖励 +${rewards.inviteeReward ?? 0} / 注册奖励 +${rewards.registerReward ?? 0} / 永久余额 ${rewards.permanentBalance ?? '-'} / 当前 ${rewards.currentBalance ?? '-'}`)
+  } else if (inviteReport.status === 'dry-run') {
+    print(`邀请码: [dry-run] 将绑定 ${inviteReport.inviteCode}${source}`)
+  } else if (inviteReport.status === 'failed') {
+    print(`❌ 绑定邀请码 ${inviteReport.inviteCode} 失败: ${inviteReport.error}`)
+  } else if (inviteReport.status === 'error') {
+    print(`⚠️ 读取激活状态失败: ${inviteReport.error}`)
+  } else {
+    print('邀请码: 未绑定（--invite CODE 指定，或 --invite auto 从池内摸一个）')
+  }
+
+  // 2) 新手任务：只补未完成的 key
+  if (report.tasks.rows.length === 0) {
+    print('新手任务: 读取失败')
+  } else {
+    print(`新手任务: 已完成 ${report.tasks.earned} / ${report.tasks.total} 积分`)
+    table(report.tasks.rows.map((row) => ({ ...row, status: TASK_STATUS_LABEL[row.status] || row.status })), [
+      { title: 'KEY', value: (row) => row.key },
+      { title: '任务', value: (row) => row.title },
+      { title: '积分', value: (row) => row.points },
+      { title: '状态', value: (row) => row.status },
+    ])
+  }
+
+  for (const error of report.errors) {
+    if (error.step === 'activation') continue // 上面那行已经印过
+    print(`⚠️ ${error.step}: ${error.message}`)
+  }
+
+  // 3) 收尾：刷一次钱包，确认到账
+  const refreshed = await ctx.pointsTracker.refreshAccount(account.id, { force: true, reason: 'cli-bonus' })
+  if (refreshed.ok) {
+    print(`积分余额: 每日 ${refreshed.wallet?.daily ?? '-'} / 永久 ${refreshed.wallet?.balance ?? '-'}`)
+  } else {
+    print(`积分余额刷新失败: ${refreshed.error}`)
+  }
+
+  if (!report.ok) process.exitCode = 1
+}
+
 
 async function cmdHelp () {
   print(`LoomyProxy CLI
@@ -390,10 +510,11 @@ async function cmdHelp () {
   node src/cli.js doctor
   node src/cli.js login [--phone 13800000000]
   node src/cli.js import-local
-  node src/cli.js accounts [list|check|rm|enable|disable] [id]
+  node src/cli.js accounts [list|check|points|rm|enable|disable] [id]
   node src/cli.js key [list|create|rm] [--name xxx] [--rpm 60] [--models a,b]
   node src/cli.js models [--json]
   node src/cli.js probe [--model spark-x2.6]
+  node src/cli.js bonus --account <id|名称|手机号> [--invite CODE|auto] [--dry-run]
 
 环境变量:
   LOOMY_PROXY_HOST / LOOMY_PROXY_PORT / LOOMY_PROXY_ADMIN_PASSWORD
@@ -412,6 +533,7 @@ async function main () {
     case 'key': case 'keys': return cmdKey()
     case 'models': return cmdModels()
     case 'probe': return cmdProbe()
+    case 'bonus': case 'onboarding': return cmdBonus()
     case 'help': case '--help': case '-h': return cmdHelp()
     default:
       await cmdHelp()

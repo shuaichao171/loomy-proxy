@@ -11,7 +11,8 @@ set -euo pipefail
 DIR="/www/wwwroot/docker/loomy-proxy-deploy"
 PORT="8787"
 NETWORK=""
-SOURCE="$(cd "$(dirname "$0")" && pwd)"
+# 默认源码根 = deploy 的上一级目录（即 /www/wwwroot/docker/loomy-proxy-src）
+SOURCE="$(cd "$(dirname "$0")/.." && pwd)"
 NODE_IMAGE=""
 
 while [ $# -gt 0 ]; do

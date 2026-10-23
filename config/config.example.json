@@ -11,6 +11,8 @@
     "clientVersion": "0.9.39",
     "requestPurpose": "chat.message",
     "timeoutMs": 600000,
+    "connectTimeoutMs": 8000,
+    "connectRetries": 1,
     "sendTraceparent": true,
     "sendTrackingHeaders": true
   },
@@ -25,7 +27,10 @@
     "maxRetries": 2,
     "cooldownSeconds": 60,
     "sessionAffinity": true,
-    "affinityTtlSeconds": 1800
+    "affinityTtlSeconds": 1800,
+    "preferDailyPoints": true,
+    "pointsRefreshSeconds": 300,
+    "pointsMinRefreshSeconds": 60
   },
   "logging": {
     "level": "info",
@@ -43,6 +48,8 @@
     "resendCooldownSeconds": 60,
     "maxAttempts": 5,
     "maxSendsPerHour": 5,
-    "maxPending": 200
+    "maxPending": 200,
+    "autoBonus": true,
+    "autoInvite": true
   }
 }
